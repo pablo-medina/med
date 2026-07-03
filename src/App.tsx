@@ -4,14 +4,16 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { locale as systemLocale } from "@tauri-apps/plugin-os";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
-  Bold, Code2, Columns2, Download, Eye, File, FilePlus2, FolderOpen, History,
+  Bold, ChevronDown, Code2, Columns2, Download, Eye, File, FilePlus2, FolderOpen, History,
   Heading2, Info, Italic, Link, List, ListOrdered, Minus, PanelLeftClose,
   PanelLeftOpen, Printer, Quote, Redo2, Save, Settings as SettingsIcon, Undo2, X
 } from "lucide-react";
 import { exportDocx, exportHtml } from "./exporters";
 import { extractHeadings, renderMarkdown } from "./markdown";
 import { inferLocale, translate, type MessageKey } from "./i18n";
+import { MarkdownEditor, type MarkdownEditorHandle } from "./MarkdownEditor";
 import type { AppConfig, EditorDocument, Locale, Settings, Theme, ViewMode } from "./types";
 
 const EMPTY = "";
@@ -55,9 +57,11 @@ export default function App() {
   const [maximized, setMaximized] = useState(false);
   const [cursor, setCursor] = useState({ line: 1, column: 1 });
   const [toast, setToast] = useState("");
-  const editorRef = useRef<HTMLTextAreaElement>(null);
+  const editorRef = useRef<MarkdownEditorHandle>(null);
+  const previewRef = useRef<HTMLElement>(null);
   const documentsRef = useRef<EditorDocument[]>([]);
   const startupHandled = useRef(false);
+  const windowRevealed = useRef(false);
   documentsRef.current = documents;
   const active = documents.find((document) => document.id === activeId) || null;
   const t = useCallback((key: MessageKey) => translate(settings.locale, key), [settings.locale]);
@@ -159,6 +163,15 @@ export default function App() {
   }, [addNativeDocument, configReady, newDocument]);
 
   useEffect(() => {
+    if (!isNative || !configReady || !activeId || windowRevealed.current) return;
+    const frame = requestAnimationFrame(() => {
+      windowRevealed.current = true;
+      void invoke("reveal_main_window").then(() => requestAnimationFrame(() => editorRef.current?.refreshLayout()));
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [activeId, configReady]);
+
+  useEffect(() => {
     if (!isNative || !configReady) return;
     const config: AppConfig = { version: 3, settings, view: { mode, outline: sidebar } };
     const timer = window.setTimeout(() => {
@@ -219,14 +232,6 @@ export default function App() {
 
   function updateContent(content: string) {
     setDocuments((current) => current.map((document) => document.id === activeId ? { ...document, content } : document));
-    updateCursor();
-  }
-
-  function updateCursor() {
-    const editor = editorRef.current;
-    if (!editor) return;
-    const before = editor.value.slice(0, editor.selectionStart).split("\n");
-    setCursor({ line: before.length, column: before[before.length - 1].length + 1 });
   }
 
   function requestClose(documentId: string) {
@@ -255,17 +260,18 @@ export default function App() {
   function wrapSelection(before: string, after = before, placeholder = "text") {
     const editor = editorRef.current;
     if (!editor || !active) return;
-    const start = editor.selectionStart, end = editor.selectionEnd;
+    const { start, end } = editor.getSelection();
     const selected = active.content.slice(start, end) || placeholder;
     updateContent(active.content.slice(0, start) + before + selected + after + active.content.slice(end));
-    requestAnimationFrame(() => { editor.focus(); editor.setSelectionRange(start + before.length, start + before.length + selected.length); });
+    requestAnimationFrame(() => { editor.focus(); editor.setSelection(start + before.length, start + before.length + selected.length); });
   }
 
   function prefixLines(prefix: string) {
     const editor = editorRef.current;
     if (!editor || !active) return;
-    const start = active.content.lastIndexOf("\n", editor.selectionStart - 1) + 1;
-    const endBreak = active.content.indexOf("\n", editor.selectionEnd);
+    const selection = editor.getSelection();
+    const start = active.content.lastIndexOf("\n", selection.start - 1) + 1;
+    const endBreak = active.content.indexOf("\n", selection.end);
     const end = endBreak < 0 ? active.content.length : endBreak;
     const block = active.content.slice(start, end).split("\n").map((line, index) => prefix.replace("%n", String(index + 1)) + line).join("\n");
     updateContent(active.content.slice(0, start) + block + active.content.slice(end));
@@ -287,6 +293,43 @@ export default function App() {
     catch { showToast(t("exportError")); }
   }
 
+  function scrollPreviewTo(fragment: string) {
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const target = document.getElementById(decodeURIComponent(fragment));
+      target?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }));
+  }
+
+  async function followPreviewLink(event: React.MouseEvent<HTMLElement>) {
+    const anchor = (event.target as HTMLElement).closest<HTMLAnchorElement>("a[href]");
+    if (!anchor) return;
+    const href = anchor.getAttribute("href");
+    if (!href) return;
+    event.preventDefault();
+    if (href.startsWith("#")) {
+      scrollPreviewTo(href.slice(1));
+      return;
+    }
+    try {
+      if (/^(https?:|mailto:|tel:)/i.test(href)) {
+        if (isNative) await openUrl(href);
+        else window.open(href, "_blank", "noopener,noreferrer");
+        return;
+      }
+      const [linkPath, fragment] = href.split("#", 2);
+      if (active?.path && /\.(md|markdown)$/i.test(linkPath)) {
+        const file = await invoke<NativeDocument>("read_linked_document", {
+          basePath: active.path,
+          linkPath: decodeURIComponent(linkPath),
+        });
+        addNativeDocument(file);
+        if (fragment) scrollPreviewTo(fragment);
+      }
+    } catch {
+      showToast(t("openError"));
+    }
+  }
+
   function showToast(message: string) { setToast(message); window.setTimeout(() => setToast(""), 2400); }
 
   async function toggleWindowMaximize() {
@@ -300,7 +343,7 @@ export default function App() {
     if (!active) return;
     const position = active.content.split("\n").slice(0, line - 1).reduce((sum, value) => sum + value.length + 1, 0);
     setMode((current) => current === "preview" ? "split" : current);
-    requestAnimationFrame(() => { editorRef.current?.focus(); editorRef.current?.setSelectionRange(position, position); updateCursor(); });
+    requestAnimationFrame(() => { editorRef.current?.focus(); editorRef.current?.setSelection(position); });
   }
 
   const dirty = active ? active.content !== active.savedContent : false;
@@ -310,15 +353,26 @@ export default function App() {
       onDoubleClick={(event) => { if (!(event.target as HTMLElement).closest("button")) void toggleWindowMaximize(); }}
       onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setContextMenu({ x: event.clientX, y: event.clientY, kind: "titlebar" }); }}>
       <div className="titlebar-left" data-tauri-drag-region>
-        <div className="brand" data-tauri-drag-region><img className="brand-icon" src="/med-icon.png" alt="" /><strong>MED</strong></div>
+        <div className="brand" data-tauri-drag-region><img className="brand-icon" src="/med-icon.png" alt="" /></div>
         <div className="titlebar-file-actions" onDoubleClick={(event) => event.stopPropagation()}>
           <IconButton label={t("newFile")} onClick={newDocument}><FilePlus2 /></IconButton>
           <IconButton label={t("open")} onClick={() => void openDocument()}><FolderOpen /></IconButton>
           <IconButton label={t("save")} disabled={!active || !dirty} onClick={() => void saveDocument()}><Save /></IconButton>
+          <div className="menu-wrap titlebar-documents">
+            <IconButton label={t("documents")} onClick={(event) => { event.stopPropagation(); setExportOpen(false); setDocumentsOpen(!documentsOpen); }}><History /></IconButton>
+            {documentsOpen && <div className="popup-menu documents-menu" onClick={(event) => event.stopPropagation()}>
+              <div className="popover-heading"><span>{t("documents")}</span><span className="count">{documents.length}</span></div>
+              <div className="popover-document-list">{documents.map((document) => <button key={document.id} className={`popover-document ${document.id === activeId ? "active" : ""}`} onClick={() => { setActiveId(document.id); setDocumentsOpen(false); }}>
+                <File /><span>{document.title}</span>{document.content !== document.savedContent && <i />}
+                <span className="tab-close" role="button" aria-label={t("close")} onClick={(event) => { event.stopPropagation(); requestClose(document.id); }}><X /></span>
+              </button>)}</div>
+            </div>}
+          </div>
+          <IconButton className={sidebar ? "active-titlebar-button" : ""} label={t("outline")} onClick={() => setSidebar(!sidebar)}>{sidebar ? <PanelLeftClose /> : <PanelLeftOpen />}</IconButton>
+          <IconButton label={t("printPdf")} disabled={!active} onClick={printDocument}><Printer /></IconButton>
           <div className="menu-wrap titlebar-export">
             <IconButton className="titlebar-export-button" label={t("export")} disabled={!active} onClick={(event) => { event.stopPropagation(); setDocumentsOpen(false); setExportOpen(!exportOpen); }}><Download /></IconButton>
             {exportOpen && <div className="popup-menu export-menu" onClick={(event) => event.stopPropagation()}>
-              <MenuButton icon={<Printer />} label={t("printPdf")} onClick={printDocument} />
               <MenuButton icon={<File />} label={t("exportDocx")} onClick={() => void runExport("docx")} />
               <MenuButton icon={<Code2 />} label={t("exportHtml")} onClick={() => void runExport("html")} />
             </div>}
@@ -331,17 +385,6 @@ export default function App() {
           <ModeButton active={mode === "edit"} label={t("edit")} onClick={() => setMode("edit")}><File /></ModeButton>
           <ModeButton active={mode === "split"} label={t("split")} onClick={() => setMode("split")}><Columns2 /></ModeButton>
           <ModeButton active={mode === "preview"} label={t("preview")} onClick={() => setMode("preview")}><Eye /></ModeButton>
-        </div>
-        <IconButton className={sidebar ? "active-titlebar-button" : ""} label={t("outline")} onClick={() => setSidebar(!sidebar)}>{sidebar ? <PanelLeftClose /> : <PanelLeftOpen />}</IconButton>
-        <div className="menu-wrap titlebar-documents">
-          <IconButton label={t("documents")} onClick={(event) => { event.stopPropagation(); setExportOpen(false); setDocumentsOpen(!documentsOpen); }}><History /></IconButton>
-          {documentsOpen && <div className="popup-menu documents-menu" onClick={(event) => event.stopPropagation()}>
-            <div className="popover-heading"><span>{t("documents")}</span><span className="count">{documents.length}</span></div>
-            <div className="popover-document-list">{documents.map((document) => <button key={document.id} className={`popover-document ${document.id === activeId ? "active" : ""}`} onClick={() => { setActiveId(document.id); setDocumentsOpen(false); }}>
-              <File /><span>{document.title}</span>{document.content !== document.savedContent && <i />}
-              <span className="tab-close" role="button" aria-label={t("close")} onClick={(event) => { event.stopPropagation(); requestClose(document.id); }}><X /></span>
-            </button>)}</div>
-          </div>}
         </div>
         <IconButton label={t("settings")} onClick={() => { setSettingsSection("general"); setModal("settings"); }}><SettingsIcon /></IconButton>
         <div className="window-controls">
@@ -365,8 +408,8 @@ export default function App() {
         : <div className={`document-workspace mode-${mode}`}>
           <section className="editor-pane">
             <div className="editor-toolbar" aria-label={t("formatting")}>
-              <IconButton label={t("undo")} onClick={() => document.execCommand("undo")}><Undo2 /></IconButton>
-              <IconButton label={t("redo")} onClick={() => document.execCommand("redo")}><Redo2 /></IconButton>
+              <IconButton label={t("undo")} onClick={() => editorRef.current?.undo()}><Undo2 /></IconButton>
+              <IconButton label={t("redo")} onClick={() => editorRef.current?.redo()}><Redo2 /></IconButton>
               <span className="editor-toolbar-separator" />
               <IconButton label={t("bold")} onClick={() => wrapSelection("**")}><Bold /></IconButton>
               <IconButton label={t("italic")} onClick={() => wrapSelection("*")}><Italic /></IconButton>
@@ -377,9 +420,12 @@ export default function App() {
               <IconButton label={t("bulletedList")} onClick={() => prefixLines("- ")}><List /></IconButton>
               <IconButton label={t("numberedList")} onClick={() => prefixLines("%n. ")}><ListOrdered /></IconButton>
             </div>
-            <textarea ref={editorRef} aria-label={t("edit")} value={active.content} onChange={(event) => updateContent(event.target.value)} onClick={updateCursor} onKeyUp={updateCursor} onContextMenu={(event) => { event.preventDefault(); setContextMenu({ x: event.clientX, y: event.clientY, kind: "editor" }); }} spellCheck="true" wrap={settings.wordWrap ? "soft" : "off"} style={{ fontSize: settings.fontSize }} />
+            <MarkdownEditor key={active.id} ref={editorRef} ariaLabel={t("edit")} value={active.content}
+              fontSize={settings.fontSize} wordWrap={settings.wordWrap} onChange={updateContent}
+              onCursorChange={(line, column) => setCursor({ line, column })}
+              onContextMenu={(x, y) => setContextMenu({ x, y, kind: "editor" })} />
           </section>
-          <section className="preview-pane"><article className="markdown-body" dangerouslySetInnerHTML={{ __html: html }} /></section>
+          <section ref={previewRef} className="preview-pane" onClick={(event) => void followPreviewLink(event)}><article className="markdown-body" dangerouslySetInnerHTML={{ __html: html }} /></section>
         </div>}
         {active && mode !== "preview" && <footer className="statusbar"><span>{t("line")} {cursor.line}, {t("column")} {cursor.column}</span><span>{stats.words} {t("words")}</span><span>{stats.characters} {t("characters")}</span><span>Markdown</span></footer>}
       </main>
@@ -387,13 +433,13 @@ export default function App() {
 
     {contextMenu && <div className="popup-menu context-menu" style={{ left: Math.max(8, Math.min(contextMenu.x, innerWidth - 198)), top: Math.max(8, Math.min(contextMenu.y, innerHeight - (contextMenu.kind === "editor" ? 250 : 160))) }} onClick={(event) => { event.stopPropagation(); setContextMenu(null); }}>
       {contextMenu.kind === "editor" ? <>
-        <MenuButton icon={<Undo2 />} label={t("undo")} onClick={() => document.execCommand("undo")} />
-        <MenuButton icon={<Redo2 />} label={t("redo")} onClick={() => document.execCommand("redo")} />
+        <MenuButton icon={<Undo2 />} label={t("undo")} onClick={() => editorRef.current?.undo()} />
+        <MenuButton icon={<Redo2 />} label={t("redo")} onClick={() => editorRef.current?.redo()} />
         <div className="menu-separator" />
-        <MenuButton label={t("cut")} onClick={() => document.execCommand("cut")} />
-        <MenuButton label={t("copy")} onClick={() => document.execCommand("copy")} />
-        <MenuButton label={t("paste")} onClick={() => document.execCommand("paste")} />
-        <MenuButton label={t("selectAll")} onClick={() => editorRef.current?.select()} />
+        <MenuButton label={t("cut")} onClick={() => editorRef.current?.runClipboardCommand("cut")} />
+        <MenuButton label={t("copy")} onClick={() => editorRef.current?.runClipboardCommand("copy")} />
+        <MenuButton label={t("paste")} onClick={() => editorRef.current?.runClipboardCommand("paste")} />
+        <MenuButton label={t("selectAll")} onClick={() => editorRef.current?.selectAll()} />
       </> : <>
         <MenuButton icon={<Minus />} label={t("minimize")} onClick={() => void getCurrentWindow().minimize()} />
         <MenuButton icon={maximized ? <RestoreWindowIcon /> : <MaximizeWindowIcon />} label={t(maximized ? "restore" : "maximize")} onClick={() => void toggleWindowMaximize()} />
@@ -411,8 +457,8 @@ export default function App() {
         <section className="settings-panel">
           {settingsSection === "general" ? <>
             <h3>{t("general")}</h3>
-            <SettingRow label={t("theme")}><select value={settings.theme} onChange={(event) => setSettings({ ...settings, theme: event.target.value as Theme })}><option value="system">{t("system")}</option><option value="midnight">{t("midnight")}</option><option value="light">{t("light")}</option><option value="sepia">{t("sepia")}</option></select></SettingRow>
-            <SettingRow label={t("language")}><select value={settings.locale} onChange={(event) => setSettings({ ...settings, locale: event.target.value as Locale })}><option value="en">{t("english")}</option><option value="es">{t("spanish")}</option><option value="es-AR">{t("spanishArgentina")}</option></select></SettingRow>
+            <SettingRow label={t("theme")}><SelectControl label={t("theme")} value={settings.theme} onChange={(value) => setSettings({ ...settings, theme: value as Theme })} options={[{ value: "system", label: t("system") }, { value: "midnight", label: t("midnight") }, { value: "light", label: t("light") }, { value: "sepia", label: t("sepia") }]} /></SettingRow>
+            <SettingRow label={t("language")}><SelectControl label={t("language")} value={settings.locale} onChange={(value) => setSettings({ ...settings, locale: value as Locale })} options={[{ value: "en", label: t("english") }, { value: "es", label: t("spanish") }, { value: "es-AR", label: t("spanishArgentina") }]} /></SettingRow>
             <SettingRow label={t("fontSize")}><input type="number" min="12" max="24" value={settings.fontSize} onChange={(event) => setSettings({ ...settings, fontSize: Number(event.target.value) })} /></SettingRow>
             <SettingRow label={t("wordWrap")}><input type="checkbox" checked={settings.wordWrap} onChange={(event) => setSettings({ ...settings, wordWrap: event.target.checked })} /></SettingRow>
           </> : <div className="about"><img className="about-icon" src="/med-icon.png" alt="" /><h2>MED</h2><p>Markdown Editor</p><dl><div><dt>Version</dt><dd>0.1.0</dd></div><div><dt>Author</dt><dd>{t("author")}</dd></div><div><dt>License</dt><dd>{t("license")}</dd></div></dl></div>}
@@ -464,9 +510,37 @@ function Dialog({ title, closeLabel = "Close", className = "", onClose, children
     event.currentTarget.releasePointerCapture(event.pointerId);
   }
 
-  return <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section ref={dialogRef} className={`dialog ${className}`} style={position ? { position: "fixed", left: position.left, top: position.top } : undefined} role="dialog" aria-modal="true" aria-label={title}><header onPointerDown={startDrag} onPointerMove={dragDialog} onPointerUp={stopDrag} onPointerCancel={stopDrag}><h2>{title}</h2><IconButton label={closeLabel} onClick={onClose}><X /></IconButton></header><div className="dialog-content">{children}</div></section></div>;
+  return <div className="dialog-backdrop" role="presentation"><section ref={dialogRef} className={`dialog ${className}`} style={position ? { position: "fixed", left: position.left, top: position.top } : undefined} role="dialog" aria-modal="true" aria-label={title}><header onPointerDown={startDrag} onPointerMove={dragDialog} onPointerUp={stopDrag} onPointerCancel={stopDrag}><h2>{title}</h2><IconButton label={closeLabel} onClick={onClose}><X /></IconButton></header><div className="dialog-content">{children}</div></section></div>;
 }
-function SettingRow({ label, children }: { label: string; children: React.ReactNode }) { return <label className="setting-row"><span>{label}</span>{children}</label>; }
+function SettingRow({ label, children }: { label: string; children: React.ReactNode }) { return <div className="setting-row"><span>{label}</span>{children}</div>; }
+function SelectControl({ label, value, options, onChange }: { label: string; value: string; options: { value: string; label: string }[]; onChange: (value: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const controlRef = useRef<HTMLDivElement>(null);
+  const selected = options.find((option) => option.value === value) || options[0];
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: PointerEvent) => {
+      if (!controlRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", close);
+    return () => document.removeEventListener("pointerdown", close);
+  }, [open]);
+
+  function moveSelection(offset: number) {
+    const index = options.findIndex((option) => option.value === value);
+    onChange(options[(index + offset + options.length) % options.length].value);
+  }
+
+  return <div ref={controlRef} className={`select-control ${open ? "open" : ""}`}>
+    <button type="button" className="select-trigger" aria-label={label} aria-haspopup="listbox" aria-expanded={open}
+      onClick={() => setOpen(!open)} onKeyDown={(event) => {
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); moveSelection(event.key === "ArrowDown" ? 1 : -1); setOpen(true); }
+        if (event.key === "Escape") setOpen(false);
+      }}><span>{selected.label}</span><ChevronDown aria-hidden="true" /></button>
+    {open && <div className="select-options" role="listbox" aria-label={label}>{options.map((option) => <button type="button" role="option" aria-selected={option.value === value} className={option.value === value ? "selected" : ""} key={option.value} onClick={() => { onChange(option.value); setOpen(false); }}>{option.label}</button>)}</div>}
+  </div>;
+}
 
 function MaximizeWindowIcon() {
   return <svg viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3.5" y="3.5" width="11" height="11" rx="1" /></svg>;

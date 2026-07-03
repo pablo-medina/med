@@ -4,7 +4,16 @@ import { marked } from "marked";
 marked.setOptions({ gfm: true, breaks: false });
 
 export function renderMarkdown(source: string): string {
-  return DOMPurify.sanitize(String(marked.parse(source, { async: false })));
+  const sanitized = DOMPurify.sanitize(String(marked.parse(source, { async: false })));
+  const document = new DOMParser().parseFromString(sanitized, "text/html");
+  const occurrences = new Map<string, number>();
+  document.querySelectorAll("h1, h2, h3, h4, h5, h6").forEach((heading) => {
+    const base = slug(heading.textContent || "section") || "section";
+    const occurrence = occurrences.get(base) || 0;
+    occurrences.set(base, occurrence + 1);
+    heading.id = occurrence === 0 ? base : `${base}-${occurrence}`;
+  });
+  return document.body.innerHTML;
 }
 
 export interface Heading { level: number; text: string; line: number; id: string }

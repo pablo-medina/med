@@ -43,6 +43,27 @@ fn read_document(path: String) -> Result<DocumentFile, String> {
 }
 
 #[tauri::command]
+fn read_linked_document(base_path: String, link_path: String) -> Result<DocumentFile, String> {
+    let link = PathBuf::from(link_path);
+    let path = if link.is_absolute() {
+        link
+    } else {
+        PathBuf::from(base_path)
+            .parent()
+            .ok_or("The current document has no parent directory")?
+            .join(link)
+    };
+    let is_markdown = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "md" | "markdown"));
+    if !is_markdown {
+        return Err("Only Markdown document links can be opened in MED".into());
+    }
+    read_document_path(path)
+}
+
+#[tauri::command]
 fn write_document(path: String, content: String) -> Result<String, String> {
     let path = PathBuf::from(path);
     if let Some(parent) = path.parent() {
@@ -125,10 +146,12 @@ pub fn run() {
             }
         }))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init())
         .invoke_handler(tauri::generate_handler![
             startup_document,
             read_document,
+            read_linked_document,
             write_document,
             write_binary,
             read_config,

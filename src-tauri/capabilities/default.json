@@ -12,6 +12,7 @@
     "core:window:allow-is-maximized",
     "dialog:allow-open",
     "dialog:allow-save",
-    "os:allow-locale"
+    "os:allow-locale",
+    "opener:default"
   ]
 }
