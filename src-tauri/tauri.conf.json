@@ -1,0 +1,47 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "MED",
+  "version": "0.1.0",
+  "identifier": "com.pablomedina.med",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "MED",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 860,
+        "minHeight": 560,
+        "decorations": false,
+        "transparent": false,
+        "center": true,
+        "visible": true
+      }
+    ],
+    "security": { "csp": null }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "publisher": "Pablo Medina",
+    "category": "Productivity",
+    "shortDescription": "A fast, focused Markdown editor.",
+    "longDescription": "MED is a modern Markdown viewer and editor for Windows, Linux, and macOS.",
+    "copyright": "Copyright © 2026 Pablo Medina",
+    "fileAssociations": [
+      {
+        "ext": ["md", "markdown"],
+        "name": "Markdown document",
+        "description": "Markdown document",
+        "role": "Editor"
+      }
+    ],
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"]
+  }
+}

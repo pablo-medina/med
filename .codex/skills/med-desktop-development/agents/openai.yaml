@@ -1,0 +1,4 @@
+interface:
+  display_name: "MED Desktop Development"
+  short_description: "Build and verify MED desktop features"
+  default_prompt: "Use $med-desktop-development to implement this MED feature while preserving its native architecture, performance, themes, and bilingual UI."
