@@ -187,6 +187,17 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!contextMenu) return;
+    const closeOutside = (event: PointerEvent) => {
+      if (!(event.target instanceof Element) || !event.target.closest(".context-menu")) {
+        setContextMenu(null);
+      }
+    };
+    window.addEventListener("pointerdown", closeOutside, true);
+    return () => window.removeEventListener("pointerdown", closeOutside, true);
+  }, [contextMenu]);
+
+  useEffect(() => {
     if (!isNative) return;
     const appWindow = getCurrentWindow();
     const syncMaximized = () => void appWindow.isMaximized().then(setMaximized);
