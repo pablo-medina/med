@@ -11,17 +11,21 @@ Created by Pablo Medina and released under the [MIT License](LICENSE).
 - A visual editor powered by ProseMirror and styled as a native part of MED.
 - View Source mode with Markdown source and preview panels.
 - Deterministic Markdown serialization: saving an unchanged document repeatedly produces the same output.
+- Export to PDF, DOCX, OpenDocument Text, and a portable HTML ZIP package.
+- Selectable A4, Letter, Legal, and A5 page sizes for paginated exports.
+- Optional image collection embeds local, data-URL, and downloaded remote images in exported files.
 - A custom title bar and desktop-oriented window controls.
 - Token-based light and dark themes, with the operating-system preference used when available and dark as the fallback.
 - English and neutral, formal Spanish, selected from the operating-system locale with English as the fallback.
 
-Export to PDF, DOCX, and OpenDocument is intentionally outside this stage. Those formats will belong to Export rather than Save or Save As.
+Save and Save As remain Markdown-only. Shareable and paginated formats are produced exclusively through File → Export.
 
 ## Technology
 
 - Rust and Tauri 2 for the desktop application boundary.
 - React and TypeScript for the interface.
 - ProseMirror for document editing, selection, history, and clipboard behavior.
+- Rust export pipelines for PDF, Word, OpenDocument, and HTML packages.
 - Plain CSS with design tokens for application-owned components and editor styling.
 
 MED does not use a general-purpose component framework or utility CSS framework. This keeps the visual system cohesive and the application footprint understandable.

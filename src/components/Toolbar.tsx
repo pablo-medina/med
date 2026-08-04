@@ -27,6 +27,7 @@ interface ToolbarProps {
   onOpen: () => void;
   onSave: () => void;
   onSaveAs: () => void;
+  onExport: () => void;
   onPreferences: () => void;
   onExit: () => void;
   onLink: () => void;
@@ -183,6 +184,7 @@ export function Toolbar({
   onOpen,
   onSave,
   onSaveAs,
+  onExport,
   onPreferences,
   onExit,
   onLink,
@@ -228,6 +230,8 @@ export function Toolbar({
             { separator: true },
             { label: t("menu.file.save"), shortcut: "Ctrl+S", action: onSave },
             { label: t("menu.file.saveAs"), shortcut: "Ctrl+Shift+S", action: onSaveAs },
+            { separator: true },
+            { label: t("menu.file.export"), action: onExport },
             { separator: true },
             { label: t("menu.file.preferences"), action: onPreferences },
             { separator: true },
@@ -306,7 +310,6 @@ export function Toolbar({
             onClick={() => onModeChange("visual")}
           >
             <Icon name="eye" />
-            <span>{t("menu.view.visualEditor")}</span>
           </button>
           <button
             className={mode === "source" ? "is-selected" : ""}
@@ -316,7 +319,6 @@ export function Toolbar({
             onClick={() => onModeChange("source")}
           >
             <Icon name="source" />
-            <span>{t("menu.view.source")}</span>
           </button>
         </div>
       </div>

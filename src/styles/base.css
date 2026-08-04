@@ -335,24 +335,27 @@ select:disabled {
 
 .mode-switch {
   display: flex;
-  padding: 2px;
-  background: var(--color-window);
+  overflow: hidden;
+  background: var(--color-canvas);
   border: 1px solid var(--color-border);
-  border-radius: calc(var(--radius-control) + 1px);
+  border-radius: 999px;
 }
 
 .mode-switch button {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
-  height: 26px;
-  padding: 0 var(--space-3);
+  justify-content: center;
+  width: 36px;
+  height: 28px;
+  padding: 0;
   color: var(--color-text-muted);
   background: transparent;
   border: 0;
-  border-radius: var(--radius-control);
+  border-radius: 0;
   font-size: 12px;
 }
+
+.mode-switch button + button { border-left: 1px solid var(--color-border); }
 
 .mode-switch button svg {
   width: 16px;
@@ -364,10 +367,27 @@ select:disabled {
 }
 
 .mode-switch button.is-selected {
-  color: var(--color-text);
-  background: var(--color-surface);
-  box-shadow: 0 0 0 1px var(--color-border);
+  color: var(--color-accent);
+  background: var(--color-accent-subtle);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 20%, transparent);
 }
+
+.export-dialog { display: grid; gap: var(--space-4); }
+.export-fieldset { min-width: 0; padding: 0; margin: 0; border: 0; }
+.export-fieldset legend { padding: 0 0 var(--space-2); font-size: 12px; font-weight: 650; color: var(--color-text-muted); }
+.export-formats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
+.export-format { position: relative; display: flex; min-height: 72px; padding: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-popover); background: var(--color-canvas); cursor: pointer; }
+.export-format:hover { border-color: var(--color-border-strong); }
+.export-format.is-selected { border-color: var(--color-accent); background: var(--color-accent-subtle); box-shadow: inset 0 0 0 1px var(--color-accent); }
+.export-format input { position: absolute; opacity: 0; pointer-events: none; }
+.export-format span, .export-control span { display: grid; gap: var(--space-1); }
+.export-format strong, .export-control strong { font-weight: 650; }
+.export-format small, .export-control small { color: var(--color-text-muted); font-size: 12px; line-height: 1.35; }
+.export-control { display: grid; grid-template-columns: minmax(0, 1fr) 180px; align-items: center; gap: var(--space-5); padding: var(--space-3) 0; border-top: 1px solid var(--color-border); }
+.export-control select { width: 100%; height: var(--control-md); padding: 0 28px 0 var(--space-2); color: var(--color-text); background: var(--color-canvas); border: 1px solid var(--color-border-strong); border-radius: var(--radius-control); }
+.export-control--checkbox { grid-template-columns: 18px minmax(0, 1fr); gap: var(--space-3); cursor: pointer; }
+.export-control--checkbox input { width: 16px; height: 16px; accent-color: var(--color-accent); }
+.export-note { margin: 0; padding: var(--space-3); color: var(--color-text-muted); background: var(--color-window); border-radius: var(--radius-control); font-size: 12px; line-height: 1.45; }
 
 .workspace {
   position: relative;

@@ -2,7 +2,7 @@
 
 ## Product boundary
 
-MED is a desktop document editor whose native file format is Markdown. The first stage supports creating, opening, editing, and saving Markdown files. Save and Save As never write PDF, DOCX, OpenDocument, or other document formats; those formats belong to a future Export workflow.
+MED is a desktop document editor whose native file format is Markdown. Save and Save As never write PDF, DOCX, OpenDocument, or HTML; those formats belong exclusively to the Export workflow.
 
 The application targets Windows, macOS, and Linux. Behavior should remain platform-neutral unless a native convention materially improves the experience on one platform.
 
@@ -13,6 +13,16 @@ The application targets Windows, macOS, and Linux. Behavior should remain platfo
 The Rust layer owns capabilities that require the desktop boundary: filesystem access, native file dialogs, operating-system information, and window management. Keep commands narrow and return structured errors that the React layer can present through MED's own dialog components.
 
 Filesystem capabilities should be restricted to the paths and operations needed by document workflows. Markdown parsing and presentation do not need unrestricted native access.
+
+### Export pipeline
+
+The Rust export layer parses Markdown into one shared block-and-inline model. PDF, DOCX, ODT, and HTML package generators consume that model so line breaks, headings, lists, links, quotations, code, and images behave consistently across formats.
+
+Paginated formats support A4, Letter, Legal, and A5. Their generators apply explicit margins and flow safeguards: headings stay with following content, body paragraphs use widow control where supported, and figures, quotations, list items, and code blocks avoid splitting when the target format permits it. DOCX images are inline rather than floating to avoid renderer-dependent overlap.
+
+Image collection is optional. When enabled, local paths resolve relative to the source Markdown file, data URLs are decoded, and HTTP or HTTPS images are downloaded with count and size limits. Every resulting format embeds or packages image bytes; exported documents never depend on a temporary cache.
+
+HTML export is a ZIP package containing `index.html`, `assets/styles.css`, and image assets. The page uses the same document typography and hierarchy as the visual editor while remaining independent from MED's application chrome.
 
 ### React application shell
 

@@ -5,6 +5,7 @@ import "./styles/tokens.css";
 import "./styles/base.css";
 import "./styles/editor.css";
 import { Button } from "./components/Button";
+import { ExportDialog } from "./components/ExportDialog";
 import { Splitter } from "./components/Splitter";
 import { TitleBar } from "./components/TitleBar";
 import { Toolbar } from "./components/Toolbar";
@@ -25,6 +26,11 @@ import {
 } from "./platform/files";
 import { useTheme } from "./platform/theme";
 import { platformWindow } from "./platform/window";
+import {
+  chooseExportPath,
+  exportDocument,
+  type ExportOptions,
+} from "./platform/export";
 
 type WorkspaceMode = "visual" | "source";
 
@@ -191,6 +197,7 @@ export default function App() {
   const [mode, setMode] = useState<WorkspaceMode>("visual");
   const [selection, setSelection] = useState(initialSelection);
   const [saving, setSaving] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   const documentName = fileNameFromPath(filePath, t("app.untitledDocument"));
   const dirty = markdown !== savedMarkdown;
@@ -330,6 +337,39 @@ export default function App() {
     if (url) editorRef.current?.setLink(url);
   }, [showDialog, t]);
 
+  const showExportDialog = useCallback(async () => {
+    const options = await showDialog<ExportOptions>({
+      title: t("export.title"),
+      description: t("export.description"),
+      width: "wide",
+      render: ({ close }) => (
+        <ExportDialog t={t} onCancel={() => close()} onExport={close} />
+      ),
+    });
+    if (!options) return;
+
+    const destinationPath = await chooseExportPath(documentName, options.format);
+    if (!destinationPath) return;
+
+    setExporting(true);
+    try {
+      await exportDocument({
+        ...options,
+        markdown,
+        sourcePath: filePath,
+        destinationPath,
+        title: documentName.replace(/\.(?:md|markdown|mdown|mkd)$/iu, ""),
+      });
+      await showMessage(t("export.success.title"), t("export.success.message"));
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      await showMessage(t("export.error.title"), t("export.error.message", { detail }));
+    } finally {
+      setExporting(false);
+      requestAnimationFrame(() => editorRef.current?.focus());
+    }
+  }, [documentName, filePath, markdown, showDialog, showMessage, t]);
+
   useEffect(() => {
     const title = `${documentName}${dirty ? " •" : ""} — MED`;
     void platformWindow.setTitle(title);
@@ -380,6 +420,7 @@ export default function App() {
         onOpen={() => void openDocument()}
         onSave={() => void saveDocument()}
         onSaveAs={() => void saveDocument(true)}
+        onExport={() => void showExportDialog()}
         onPreferences={() => void showPreferences()}
         onExit={() => void requestClose()}
         onLink={() => void showLinkDialog()}
@@ -428,7 +469,7 @@ export default function App() {
       </main>
       <footer className="status-bar">
         <span className={`status-indicator ${dirty ? "is-dirty" : ""}`} />
-        <span>{saving ? t("status.saving") : dirty ? t("status.unsaved") : t("status.saved")}</span>
+        <span>{exporting ? t("status.exporting") : saving ? t("status.saving") : dirty ? t("status.unsaved") : t("status.saved")}</span>
         <span className="status-bar__spacer" />
         <span>{t("status.words", { count: wordCount })}</span>
         <span>{t("status.characters", { count: markdown.length })}</span>

@@ -143,6 +143,9 @@ export const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
 
       viewRef.current = view;
       onSelectionChangeRef.current?.(selectionState(view));
+      requestAnimationFrame(() => {
+        if (viewRef.current === view) view.focus();
+      });
       return () => {
         view.destroy();
         viewRef.current = null;
