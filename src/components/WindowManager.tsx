@@ -43,6 +43,11 @@ export interface DialogController<T> {
   close: (result?: T) => void;
 }
 
+export interface DialogHandle<T> {
+  result: Promise<T | undefined>;
+  close: (result?: T) => void;
+}
+
 export interface DialogOptions<T> {
   title: ReactNode;
   description?: string;
@@ -63,6 +68,7 @@ interface DialogEntry {
 }
 
 interface WindowManagerValue {
+  openDialog: <T>(options: DialogOptions<T>) => DialogHandle<T>;
   showDialog: <T>(options: DialogOptions<T>) => Promise<T | undefined>;
   registerSurface: (surface: ManagedSurfaceDescriptor) => () => void;
 }
@@ -178,33 +184,43 @@ export function WindowManager({ children }: { children: ReactNode }) {
     (applicationRef.current as HTMLDivElement & { inert: boolean }).inert = dialogs.length > 0;
   }, [dialogs.length]);
 
-  const showDialog = useCallback(<T,>(options: DialogOptions<T>) => {
-    return new Promise<T | undefined>((resolve) => {
-      const id = `dialog-${Date.now()}-${++nextDialogId}`;
-      surfacesRef.current.set(id, {
-        id,
-        kind: "modalDialog",
-        ownerId: "main",
-        closePolicy: options.closeOnEscape === false ? "explicit" : "escape",
-      });
-      setDialogs((entries) => [
-        ...entries,
-        {
-          id,
-          title: options.title,
-          description: options.description,
-          closeOnEscape: options.closeOnEscape ?? true,
-          width: options.width ?? "standard",
-          returnFocus: document.activeElement as HTMLElement | null,
-          render: options.render as (controller: DialogController<unknown>) => ReactNode,
-          resolve: resolve as (result: unknown) => void,
-        },
-      ]);
+  const openDialog = useCallback(<T,>(options: DialogOptions<T>): DialogHandle<T> => {
+    const id = `dialog-${Date.now()}-${++nextDialogId}`;
+    let resolveResult: (result: T | undefined) => void = () => {};
+    const result = new Promise<T | undefined>((resolve) => {
+      resolveResult = resolve;
     });
-  }, []);
+    surfacesRef.current.set(id, {
+      id,
+      kind: "modalDialog",
+      ownerId: "main",
+      closePolicy: options.closeOnEscape === false ? "explicit" : "escape",
+    });
+    setDialogs((entries) => [
+      ...entries,
+      {
+        id,
+        title: options.title,
+        description: options.description,
+        closeOnEscape: options.closeOnEscape ?? true,
+        width: options.width ?? "standard",
+        returnFocus: document.activeElement as HTMLElement | null,
+        render: options.render as (controller: DialogController<unknown>) => ReactNode,
+        resolve: resolveResult as (result: unknown) => void,
+      },
+    ]);
+    return {
+      result,
+      close: (value) => closeDialog(id, value),
+    };
+  }, [closeDialog]);
+
+  const showDialog = useCallback(<T,>(options: DialogOptions<T>) => {
+    return openDialog(options).result;
+  }, [openDialog]);
 
   return (
-    <WindowManagerContext.Provider value={{ showDialog, registerSurface }}>
+    <WindowManagerContext.Provider value={{ openDialog, showDialog, registerSurface }}>
       <div ref={applicationRef} className="managed-application">{children}</div>
       {dialogs.length > 0 && (
         <ManagedDialog

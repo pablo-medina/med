@@ -11,6 +11,7 @@ export interface ExportOptions {
 }
 
 interface ExportRequest extends ExportOptions {
+  exportId: string;
   markdown: string;
   sourcePath: string | null;
   destinationPath: string;
@@ -40,4 +41,9 @@ export async function chooseExportPath(
 export async function exportDocument(request: ExportRequest): Promise<void> {
   if (!isTauri()) return;
   await invoke("export_document", { request });
+}
+
+export async function cancelExport(exportId: string): Promise<boolean> {
+  if (!isTauri()) return false;
+  return invoke<boolean>("cancel_export", { exportId });
 }

@@ -5,7 +5,7 @@ import "./styles/tokens.css";
 import "./styles/base.css";
 import "./styles/editor.css";
 import { Button } from "./components/Button";
-import { ExportDialog } from "./components/ExportDialog";
+import { ExportDialog, ExportProgressDialog } from "./components/ExportDialog";
 import { Splitter } from "./components/Splitter";
 import { TitleBar } from "./components/TitleBar";
 import { Toolbar } from "./components/Toolbar";
@@ -27,6 +27,7 @@ import {
 import { useTheme } from "./platform/theme";
 import { platformWindow } from "./platform/window";
 import {
+  cancelExport,
   chooseExportPath,
   exportDocument,
   type ExportOptions,
@@ -185,11 +186,12 @@ function PreferencesDialogContent({ onClose }: { onClose: () => void }) {
 
 export default function App() {
   const { t } = useI18n();
-  const { showDialog } = useWindowManager();
+  const { openDialog, showDialog } = useWindowManager();
   const editorRef = useRef<RichEditorHandle>(null);
   const closeRequestInProgressRef = useRef(false);
   const requestCloseRef = useRef<() => Promise<void>>(async () => undefined);
   const dirtyRef = useRef(false);
+  const exportingRef = useRef(false);
 
   const [markdown, setMarkdown] = useState("");
   const [savedMarkdown, setSavedMarkdown] = useState("");
@@ -298,7 +300,7 @@ export default function App() {
   }, [ensureCanDiscard, showMessage, t]);
 
   const requestClose = useCallback(async () => {
-    if (closeRequestInProgressRef.current) return;
+    if (closeRequestInProgressRef.current || exportingRef.current) return;
     closeRequestInProgressRef.current = true;
     try {
       if (!(await ensureCanDiscard())) return;
@@ -338,6 +340,7 @@ export default function App() {
   }, [showDialog, t]);
 
   const showExportDialog = useCallback(async () => {
+    if (exportingRef.current) return;
     const options = await showDialog<ExportOptions>({
       title: t("export.title"),
       description: t("export.description"),
@@ -351,24 +354,81 @@ export default function App() {
     const destinationPath = await chooseExportPath(documentName, options.format);
     if (!destinationPath) return;
 
+    const exportId = crypto.randomUUID();
+    let cancellationRequested = false;
+    let resolveCancellation: () => void = () => {};
+    const cancellation = new Promise<void>((resolve) => {
+      resolveCancellation = resolve;
+    });
+    exportingRef.current = true;
     setExporting(true);
-    try {
-      await exportDocument({
-        ...options,
-        markdown,
-        sourcePath: filePath,
-        destinationPath,
-        title: documentName.replace(/\.(?:md|markdown|mdown|mkd)$/iu, ""),
-      });
-      await showMessage(t("export.success.title"), t("export.success.message"));
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      await showMessage(t("export.error.title"), t("export.error.message", { detail }));
-    } finally {
-      setExporting(false);
+    const progressDialog = openDialog({
+      title: t("export.progress.title"),
+      description: t("export.progress.description", {
+        name: fileNameFromPath(destinationPath, documentName),
+      }),
+      closeOnEscape: false,
+      width: "compact",
+      render: () => (
+        <ExportProgressDialog
+          t={t}
+          onCancel={async () => {
+            if (cancellationRequested) return;
+            cancellationRequested = true;
+            try {
+              if (await cancelExport(exportId)) {
+                resolveCancellation();
+              } else {
+                cancellationRequested = false;
+              }
+            } catch (error) {
+              cancellationRequested = false;
+              throw error;
+            }
+          }}
+        />
+      ),
+    });
+    const completion: Promise<
+      { status: "complete" } | { status: "error"; error: unknown }
+    > = exportDocument({
+      exportId,
+      ...options,
+      markdown,
+      sourcePath: filePath,
+      destinationPath,
+      title: documentName.replace(/\.(?:md|markdown|mdown|mkd)$/iu, ""),
+    }).then(
+      () => ({ status: "complete" }),
+      (error: unknown) => ({ status: "error", error }),
+    );
+    const outcome = await Promise.race([
+      completion,
+      cancellation.then(() => ({ status: "canceled" }) as const),
+    ]);
+
+    progressDialog.close();
+    await progressDialog.result;
+    exportingRef.current = false;
+    setExporting(false);
+
+    if (
+      outcome.status === "canceled"
+      || (cancellationRequested && outcome.status === "error")
+    ) {
       requestAnimationFrame(() => editorRef.current?.focus());
+      return;
     }
-  }, [documentName, filePath, markdown, showDialog, showMessage, t]);
+    if (outcome.status === "error") {
+      const detail = outcome.error instanceof Error
+        ? outcome.error.message
+        : String(outcome.error);
+      await showMessage(t("export.error.title"), t("export.error.message", { detail }));
+    } else {
+      await showMessage(t("export.success.title"), t("export.success.message"));
+    }
+    requestAnimationFrame(() => editorRef.current?.focus());
+  }, [documentName, filePath, markdown, openDialog, showDialog, showMessage, t]);
 
   useEffect(() => {
     const title = `${documentName}${dirty ? " •" : ""} — MED`;
@@ -390,6 +450,10 @@ export default function App() {
   useEffect(() => {
     const handleShortcut = (event: globalThis.KeyboardEvent) => {
       if (!(event.ctrlKey || event.metaKey) || event.altKey || event.isComposing) return;
+      if (exportingRef.current) {
+        event.preventDefault();
+        return;
+      }
       const key = event.key.toLowerCase();
       if (key === "n") {
         event.preventDefault();

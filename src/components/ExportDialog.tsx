@@ -7,6 +7,38 @@ import { Button } from "./Button";
 const formats: ExportFormat[] = ["pdf", "docx", "odt", "html"];
 const paperSizes: PaperSize[] = ["a4", "letter", "legal", "a5"];
 
+export function ExportProgressDialog({
+  t,
+  onCancel,
+}: {
+  t: Translate;
+  onCancel: () => Promise<void>;
+}) {
+  const [canceling, setCanceling] = useState(false);
+
+  const cancel = async () => {
+    if (canceling) return;
+    setCanceling(true);
+    try {
+      await onCancel();
+    } catch {
+      setCanceling(false);
+    }
+  };
+
+  return (
+    <div className="export-progress" role="status" aria-live="polite" aria-busy="true">
+      <span className="export-progress__spinner" aria-hidden="true" />
+      <p>{t(canceling ? "export.progress.canceling" : "export.progress.status")}</p>
+      <div className="dialog__actions export-progress__actions">
+        <Button data-autofocus disabled={canceling} onClick={() => void cancel()}>
+          {t("common.cancel")}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export function ExportDialog({
   t,
   onCancel,

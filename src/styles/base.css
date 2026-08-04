@@ -388,6 +388,18 @@ select:disabled {
 .export-control--checkbox { grid-template-columns: 18px minmax(0, 1fr); gap: var(--space-3); cursor: pointer; }
 .export-control--checkbox input { width: 16px; height: 16px; accent-color: var(--color-accent); }
 .export-note { margin: 0; padding: var(--space-3); color: var(--color-text-muted); background: var(--color-window); border-radius: var(--radius-control); font-size: 12px; line-height: 1.45; }
+.export-progress { display: grid; grid-template-columns: 28px minmax(0, 1fr); align-items: center; gap: var(--space-4); min-height: 52px; }
+.export-progress p { margin: 0; color: var(--color-text-muted); line-height: 1.45; }
+.export-progress__spinner { width: 24px; height: 24px; border: 2px solid var(--color-border); border-top-color: var(--color-accent); border-radius: 50%; animation: export-progress-spin 800ms linear infinite; }
+.export-progress__actions { grid-column: 1 / -1; margin-top: var(--space-2); }
+
+@keyframes export-progress-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .export-progress__spinner { animation: none; }
+}
 
 .workspace {
   position: relative;

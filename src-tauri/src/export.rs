@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use thiserror::Error;
 use zip::write::SimpleFileOptions;
 
@@ -16,6 +17,7 @@ const MAX_IMAGES: usize = 64;
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportRequest {
+    pub export_id: String,
     markdown: String,
     source_path: Option<String>,
     destination_path: String,
@@ -73,6 +75,8 @@ impl PaperSize {
 
 #[derive(Debug, Error)]
 enum ExportError {
+    #[error("Export canceled.")]
+    Cancelled,
     #[error("The destination folder is not available.")]
     MissingDestination,
     #[error("Could not read image {0}: {1}")]
@@ -87,6 +91,14 @@ enum ExportError {
     Package(String),
     #[error("Could not write the exported file: {0}")]
     Write(#[from] std::io::Error),
+}
+
+fn check_cancelled(cancellation: &AtomicBool) -> Result<(), ExportError> {
+    if cancellation.load(Ordering::Relaxed) {
+        Err(ExportError::Cancelled)
+    } else {
+        Ok(())
+    }
 }
 
 #[derive(Clone, Default)]
@@ -387,7 +399,9 @@ fn resolve_images(
     blocks: &[Block],
     source_path: Option<&str>,
     include: bool,
+    cancellation: &AtomicBool,
 ) -> Result<HashMap<String, ImageAsset>, ExportError> {
+    check_cancelled(cancellation)?;
     if !include {
         return Ok(HashMap::new());
     }
@@ -397,7 +411,9 @@ fn resolve_images(
     }
     let mut result = HashMap::new();
     for (index, source) in sources.iter().enumerate() {
+        check_cancelled(cancellation)?;
         let bytes = load_image(source, source_path)?;
+        check_cancelled(cancellation)?;
         let format = image::guess_format(&bytes)
             .map_err(|error| ExportError::Image(source.clone(), error.to_string()))?;
         let decoded = image::load_from_memory(&bytes)
@@ -1070,14 +1086,17 @@ fn atomic_write(destination: &Path, bytes: &[u8]) -> Result<(), ExportError> {
     Ok(())
 }
 
-pub fn export(request: ExportRequest) -> Result<(), String> {
+pub fn export(request: ExportRequest, cancellation: &AtomicBool) -> Result<(), String> {
+    check_cancelled(cancellation).map_err(|e| e.to_string())?;
     let blocks = parse_blocks(&request.markdown);
     let images = resolve_images(
         &blocks,
         request.source_path.as_deref(),
         request.include_images,
+        cancellation,
     )
     .map_err(|e| e.to_string())?;
+    check_cancelled(cancellation).map_err(|e| e.to_string())?;
     let document = ExportDocument {
         title: request.title,
         blocks,
@@ -1090,6 +1109,7 @@ pub fn export(request: ExportRequest) -> Result<(), String> {
         ExportFormat::Html => export_html(&document),
     }
     .map_err(|e| e.to_string())?;
+    check_cancelled(cancellation).map_err(|e| e.to_string())?;
     atomic_write(Path::new(&request.destination_path), &bytes).map_err(|e| e.to_string())
 }
 
@@ -1230,5 +1250,34 @@ This content must be laid out after every code line."#;
         assert!(!html.contains("<pre"));
         assert_eq!(html.matches("pdf-code-line is-first").count(), 3);
         assert!(html.contains("This content must be laid out after every code line."));
+    }
+
+    #[test]
+    fn canceled_export_does_not_create_the_destination() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let destination = std::env::temp_dir().join(format!(
+            "med-canceled-export-{}-{unique}.pdf",
+            std::process::id()
+        ));
+        let request = ExportRequest {
+            export_id: "canceled-export".into(),
+            markdown: "# This must not be written".into(),
+            source_path: None,
+            destination_path: destination.to_string_lossy().into_owned(),
+            format: ExportFormat::Pdf,
+            paper_size: PaperSize::A4,
+            include_images: false,
+            title: "Canceled export".into(),
+        };
+        let cancellation = AtomicBool::new(true);
+
+        assert_eq!(
+            export(request, &cancellation).unwrap_err(),
+            "Export canceled."
+        );
+        assert!(!destination.exists());
     }
 }
