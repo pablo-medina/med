@@ -49,7 +49,8 @@
 .med-document ul,
 .med-document ol,
 .med-document blockquote,
-.med-document pre {
+.med-document pre,
+.med-document table {
   margin: 0 0 1em;
 }
 
@@ -122,6 +123,43 @@
 
 .med-document li > p {
   margin: 0;
+}
+
+.med-document table {
+  width: max-content;
+  max-width: 100%;
+  border-collapse: collapse;
+  border: 1px solid var(--color-border-strong);
+  font-size: 0.94em;
+  line-height: 1.45;
+}
+
+.med-document th,
+.med-document td {
+  min-width: 6rem;
+  padding: 0.45em 0.65em;
+  vertical-align: top;
+  border: 1px solid var(--color-border);
+}
+
+.med-document th {
+  color: var(--color-text);
+  background: var(--color-surface);
+  font-family: var(--font-ui);
+  font-weight: 680;
+}
+
+.med-document .selectedCell::after {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  pointer-events: none;
+  background: var(--color-accent-subtle);
+  content: "";
+}
+
+.med-document .selectedCell {
+  position: relative;
 }
 
 .splitter {

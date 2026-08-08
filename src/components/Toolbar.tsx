@@ -44,6 +44,110 @@ interface MenuProps {
   }>;
 }
 
+const TABLE_PICKER_COLUMNS = 10;
+const TABLE_PICKER_ROWS = 8;
+
+function TablePicker({
+  label,
+  disabled,
+  onInsert,
+}: {
+  label: string;
+  disabled: boolean;
+  onInsert: (rows: number, columns: number) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [size, setSize] = useState({ rows: 1, columns: 1 });
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const surfaceId = useId();
+  useManagedSurface(
+    {
+      id: `table-picker-${surfaceId}`,
+      kind: "popover",
+      ownerId: "main",
+      closePolicy: "outside-or-escape",
+    },
+    open,
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOutside = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      triggerRef.current?.focus();
+    };
+    document.addEventListener("mousedown", closeOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
+  return (
+    <div className="table-picker" ref={rootRef}>
+      <button
+        ref={triggerRef}
+        type="button"
+        className="icon-button"
+        aria-label={label}
+        title={label}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        disabled={disabled}
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <Icon name="table" />
+      </button>
+      {open && (
+        <div
+          className="table-picker__popover"
+          role="dialog"
+          aria-label={label}
+          onKeyDown={(event) => event.stopPropagation()}
+        >
+          <div className="table-picker__grid" role="grid" aria-label={label}>
+            {Array.from({ length: TABLE_PICKER_ROWS }, (_, rowIndex) =>
+              Array.from({ length: TABLE_PICKER_COLUMNS }, (_, columnIndex) => {
+                const rows = rowIndex + 1;
+                const columns = columnIndex + 1;
+                return (
+                  <button
+                    type="button"
+                    role="gridcell"
+                    key={`${rows}-${columns}`}
+                    className={
+                      rows <= size.rows && columns <= size.columns
+                        ? "table-picker__cell is-selected"
+                        : "table-picker__cell"
+                    }
+                    aria-label={`${label}: ${columns} × ${rows}`}
+                    onMouseEnter={() => setSize({ rows, columns })}
+                    onFocus={() => setSize({ rows, columns })}
+                    onClick={() => {
+                      onInsert(rows, columns);
+                      setOpen(false);
+                    }}
+                  />
+                );
+              }),
+            )}
+          </div>
+          <div className="table-picker__size" aria-live="polite">
+            {size.columns} × {size.rows} {label.toLocaleLowerCase()}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DesktopMenu({ label, items }: MenuProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -299,6 +403,14 @@ export function Toolbar({
           <IconButton icon="bulletList" label={t("editor.bulletedList")} disabled={visualDisabled} onClick={() => editorRef.current?.toggleBulletList()} />
           <IconButton icon="numberedList" label={t("editor.numberedList")} disabled={visualDisabled} onClick={() => editorRef.current?.toggleOrderedList()} />
           <IconButton icon="quote" label={t("editor.blockquote")} disabled={visualDisabled} onClick={() => editorRef.current?.toggleBlockquote()} />
+        </div>
+        <div className="command-separator" />
+        <div className="command-group">
+          <TablePicker
+            label={t("editor.table")}
+            disabled={visualDisabled}
+            onInsert={(rows, columns) => editorRef.current?.insertTable(rows, columns)}
+          />
         </div>
         <span className="command-strip__spacer" />
         <div className="mode-switch" role="group" aria-label={t("menu.view")}>

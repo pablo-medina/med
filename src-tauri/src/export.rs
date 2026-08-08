@@ -1,13 +1,22 @@
 use base64::Engine;
 use docx_rs::*;
 use printpdf::{Base64OrRaw, GeneratePdfOptions, PdfDocument, PdfSaveOptions};
-use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::{Cursor, Write};
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(windows)]
+use std::{
+    env,
+    path::Component,
+    process::Command,
+    time::{SystemTime, UNIX_EPOCH},
+};
 use thiserror::Error;
 use zip::write::SimpleFileOptions;
 
@@ -71,6 +80,16 @@ impl PaperSize {
             Self::A5 => 54,
         }
     }
+
+    #[cfg(windows)]
+    fn css_name(self) -> &'static str {
+        match self {
+            Self::A4 => "A4",
+            Self::Letter => "Letter",
+            Self::Legal => "Legal",
+            Self::A5 => "A5",
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -124,12 +143,20 @@ enum BlockKind {
     Code,
     ListItem { ordered: bool, level: usize },
     Rule,
+    Table(TableBlock),
 }
 
 #[derive(Clone)]
 struct Block {
     kind: BlockKind,
     inlines: Vec<Inline>,
+}
+
+#[derive(Clone)]
+struct TableBlock {
+    alignments: Vec<String>,
+    header: Vec<Vec<Inline>>,
+    rows: Vec<Vec<Vec<Inline>>>,
 }
 
 struct ImageAsset {
@@ -165,6 +192,9 @@ fn parse_blocks(markdown: &str) -> Vec<Block> {
     let mut lists: Vec<bool> = Vec::new();
     let mut quote_depth = 0usize;
     let mut image: Option<(String, String)> = None;
+    let mut table: Option<TableBlock> = None;
+    let mut table_row: Option<Vec<Vec<Inline>>> = None;
+    let mut table_cell: Option<Vec<Inline>> = None;
 
     let finish = |current: &mut Option<Block>, blocks: &mut Vec<Block>| {
         if let Some(block) = current.take() {
@@ -176,6 +206,26 @@ fn parse_blocks(markdown: &str) -> Vec<Block> {
         Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS;
     for event in Parser::new_ext(markdown, options) {
         match event {
+            Event::Start(Tag::Table(alignments)) => {
+                finish(&mut current, &mut blocks);
+                table = Some(TableBlock {
+                    alignments: alignments
+                        .into_iter()
+                        .map(|alignment| match alignment {
+                            Alignment::Left => "left".into(),
+                            Alignment::Center => "center".into(),
+                            Alignment::Right => "right".into(),
+                            Alignment::None => String::new(),
+                        })
+                        .collect(),
+                    header: Vec::new(),
+                    rows: Vec::new(),
+                });
+            }
+            Event::Start(Tag::TableHead) | Event::Start(Tag::TableRow) => {
+                table_row = Some(Vec::new());
+            }
+            Event::Start(Tag::TableCell) => table_cell = Some(Vec::new()),
             Event::Start(Tag::Paragraph) => {
                 if current.is_none() {
                     let kind = if let Some(ordered) = lists.last() {
@@ -230,6 +280,8 @@ fn parse_blocks(markdown: &str) -> Vec<Block> {
             Event::Text(text) => {
                 if let Some((_, alt)) = image.as_mut() {
                     alt.push_str(&text);
+                } else if let Some(cell) = table_cell.as_mut() {
+                    cell.push(Inline::Text(text.into_string(), style.clone()));
                 } else {
                     if current.is_none() {
                         let kind = if let Some(ordered) = lists.last() {
@@ -257,6 +309,10 @@ fn parse_blocks(markdown: &str) -> Vec<Block> {
             Event::Code(text) => {
                 if let Some((_, alt)) = image.as_mut() {
                     alt.push_str(&text);
+                } else if let Some(cell) = table_cell.as_mut() {
+                    let mut applied = style.clone();
+                    applied.code = true;
+                    cell.push(Inline::Text(text.into_string(), applied));
                 } else {
                     if current.is_none() {
                         current = Some(Block {
@@ -274,7 +330,9 @@ fn parse_blocks(markdown: &str) -> Vec<Block> {
                 }
             }
             Event::SoftBreak | Event::HardBreak => {
-                if let Some(block) = current.as_mut() {
+                if let Some(cell) = table_cell.as_mut() {
+                    cell.push(Inline::Break);
+                } else if let Some(block) = current.as_mut() {
                     block.inlines.push(Inline::Break);
                 }
             }
@@ -295,17 +353,44 @@ fn parse_blocks(markdown: &str) -> Vec<Block> {
             }
             Event::End(TagEnd::Image) => {
                 if let Some((source, alt)) = image.take() {
-                    if current.is_none() {
-                        current = Some(Block {
-                            kind: BlockKind::Paragraph,
-                            inlines: Vec::new(),
-                        });
+                    if let Some(cell) = table_cell.as_mut() {
+                        cell.push(Inline::Image { source, alt });
+                    } else {
+                        if current.is_none() {
+                            current = Some(Block {
+                                kind: BlockKind::Paragraph,
+                                inlines: Vec::new(),
+                            });
+                        }
+                        current
+                            .as_mut()
+                            .unwrap()
+                            .inlines
+                            .push(Inline::Image { source, alt });
                     }
-                    current
-                        .as_mut()
-                        .unwrap()
-                        .inlines
-                        .push(Inline::Image { source, alt });
+                }
+            }
+            Event::End(TagEnd::TableCell) => {
+                if let (Some(row), Some(cell)) = (table_row.as_mut(), table_cell.take()) {
+                    row.push(cell);
+                }
+            }
+            Event::End(TagEnd::TableHead) => {
+                if let (Some(table), Some(row)) = (table.as_mut(), table_row.take()) {
+                    table.header = row;
+                }
+            }
+            Event::End(TagEnd::TableRow) => {
+                if let (Some(table), Some(row)) = (table.as_mut(), table_row.take()) {
+                    table.rows.push(row);
+                }
+            }
+            Event::End(TagEnd::Table) => {
+                if let Some(table) = table.take() {
+                    blocks.push(Block {
+                        kind: BlockKind::Table(table),
+                        inlines: Vec::new(),
+                    });
                 }
             }
             Event::End(
@@ -334,10 +419,20 @@ fn parse_blocks(markdown: &str) -> Vec<Block> {
 fn image_sources(blocks: &[Block]) -> Vec<String> {
     let mut found = Vec::new();
     for block in blocks {
-        for inline in &block.inlines {
-            if let Inline::Image { source, .. } = inline {
-                if !found.contains(source) {
-                    found.push(source.clone());
+        let mut collect = |inlines: &[Inline]| {
+            for inline in inlines {
+                if let Inline::Image { source, .. } = inline {
+                    if !found.contains(source) {
+                        found.push(source.clone());
+                    }
+                }
+            }
+        };
+        collect(&block.inlines);
+        if let BlockKind::Table(table) = &block.kind {
+            for row in std::iter::once(&table.header).chain(table.rows.iter()) {
+                for cell in row {
+                    collect(cell);
                 }
             }
         }
@@ -449,6 +544,144 @@ fn escape_html(value: &str) -> String {
         .replace('"', "&quot;")
 }
 
+fn table_cell_text_length(inlines: &[Inline]) -> usize {
+    inlines
+        .iter()
+        .map(|inline| match inline {
+            Inline::Text(text, _) => text.chars().count(),
+            Inline::Break => 1,
+            Inline::Image { alt, .. } => alt.chars().count(),
+        })
+        .sum()
+}
+
+fn table_column_widths(table: &TableBlock) -> Vec<f32> {
+    let columns = table
+        .rows
+        .iter()
+        .map(Vec::len)
+        .max()
+        .unwrap_or(0)
+        .max(table.header.len());
+    if columns == 0 {
+        return Vec::new();
+    }
+
+    // The editor's browser layout gives concise columns enough room for their
+    // values, then dedicates the remaining width to prose-heavy columns. PDF
+    // export needs those proportions explicitly because the HTML renderer does
+    // not calculate intrinsic table widths like a browser does.
+    let mut weights = vec![1usize; columns];
+    for row in std::iter::once(&table.header).chain(table.rows.iter()) {
+        for (index, cell) in row.iter().enumerate() {
+            weights[index] = weights[index].max(table_cell_text_length(cell));
+        }
+    }
+    let base_width = (100.0 / columns as f32).min(10.0);
+    let flexible_width = 100.0 - base_width * columns as f32;
+    let total_weight = weights.iter().sum::<usize>().max(1) as f32;
+    weights
+        .into_iter()
+        .map(|weight| base_width + flexible_width * weight as f32 / total_weight)
+        .collect()
+}
+
+fn table_html(table: &TableBlock, images: &HashMap<String, ImageAsset>) -> String {
+    let widths = table_column_widths(table);
+    let mut html = String::from("<table><colgroup>");
+    for width in widths {
+        html.push_str(&format!("<col style=\"width:{width:.2}%\">"));
+    }
+    html.push_str("</colgroup><thead><tr>");
+    for (index, cell) in table.header.iter().enumerate() {
+        let alignment = table
+            .alignments
+            .get(index)
+            .map(String::as_str)
+            .unwrap_or("");
+        let style = if alignment.is_empty() {
+            String::new()
+        } else {
+            format!(" style=\"text-align:{alignment}\"")
+        };
+        html.push_str(&format!(
+            "<th{style}>{}</th>",
+            inline_html(cell, images, false)
+        ));
+    }
+    html.push_str("</tr></thead><tbody>");
+    for row in &table.rows {
+        html.push_str("<tr>");
+        for (index, cell) in row.iter().enumerate() {
+            let alignment = table
+                .alignments
+                .get(index)
+                .map(String::as_str)
+                .unwrap_or("");
+            let style = if alignment.is_empty() {
+                String::new()
+            } else {
+                format!(" style=\"text-align:{alignment}\"")
+            };
+            html.push_str(&format!(
+                "<td{style}>{}</td>",
+                inline_html(cell, images, false)
+            ));
+        }
+        html.push_str("</tr>");
+    }
+    html.push_str("</tbody></table>");
+    html
+}
+
+fn pdf_table_html(table: &TableBlock, images: &HashMap<String, ImageAsset>) -> String {
+    let widths = table_column_widths(table);
+    let cell_style = |index: usize| {
+        let width = widths
+            .get(index)
+            .copied()
+            .unwrap_or(100.0 / widths.len().max(1) as f32);
+        let alignment = table
+            .alignments
+            .get(index)
+            .map(String::as_str)
+            .unwrap_or("");
+        if alignment.is_empty() {
+            format!("flex:0 0 {width:.2}%")
+        } else {
+            format!("flex:0 0 {width:.2}%;text-align:{alignment}")
+        }
+    };
+    let render_row = |cells: &[Vec<Inline>], header: bool| {
+        let mut row = format!(
+            "<div class=\"pdf-table-row{}\">",
+            if header { " pdf-table-row--header" } else { "" }
+        );
+        for (index, cell) in cells.iter().enumerate() {
+            row.push_str(&format!(
+                "<div class=\"pdf-table-cell{}\" style=\"{}\">{}</div>",
+                if header {
+                    " pdf-table-cell--header"
+                } else {
+                    ""
+                },
+                cell_style(index),
+                inline_html(cell, images, false)
+            ));
+        }
+        row.push_str("</div>");
+        row
+    };
+
+    let mut html = String::from("<div class=\"pdf-table\">");
+    html.push_str(&render_row(&table.header, true));
+    for row in &table.rows {
+        html.push_str(&render_row(row, false));
+    }
+    html.push_str("</div>");
+    html
+}
+
 fn html_body(document: &ExportDocument, pdf_code_columns: Option<usize>) -> String {
     let mut html = String::new();
     let mut list: Option<(bool, usize)> = None;
@@ -470,6 +703,15 @@ fn html_body(document: &ExportDocument, pdf_code_columns: Option<usize>) -> Stri
             continue;
         }
         close_list(&mut html, &mut list);
+        if let BlockKind::Table(table) = &block.kind {
+            let table = if pdf_code_columns.is_some() {
+                pdf_table_html(table, &document.images)
+            } else {
+                table_html(table, &document.images)
+            };
+            html.push_str(&table);
+            continue;
+        }
         let content = inline_html(
             &block.inlines,
             &document.images,
@@ -493,6 +735,7 @@ fn html_body(document: &ExportDocument, pdf_code_columns: Option<usize>) -> Stri
                 }
             }
             BlockKind::Rule => html.push_str("<hr>"),
+            BlockKind::Table(_) => unreachable!(),
             BlockKind::ListItem { .. } => unreachable!(),
         }
     }
@@ -656,6 +899,8 @@ const DOCUMENT_CSS: &str = r#"
 :root{color-scheme:light;--ink:#20252b;--muted:#626b78;--accent:#315fc7;--line:#d6dae0;--paper:#fff;--code:#f3f5f7}
 *{box-sizing:border-box}html{background:#eef1f4}body{max-width:860px;margin:40px auto;padding:72px 82px;background:var(--paper);color:var(--ink);font:17px/1.62 Cambria,Georgia,"Times New Roman",serif;box-shadow:0 5px 24px rgba(24,30,39,.12)}
 h1,h2,h3,h4,h5,h6{font-family:Cambria,Georgia,"Times New Roman",serif;font-weight:700;color:#1e3865;line-height:1.2;margin:1.35em 0 .45em;break-after:avoid-page}h1{font-size:2em}h2{font-size:1.55em}h3{font-size:1.25em}p{margin:0 0 .8em;orphans:3;widows:3}a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}strong{font-weight:700}blockquote{margin:1.2em 0;padding:.15em 1.2em;border-left:4px solid var(--accent);color:#4b5563;background:#f6f8fc;break-inside:avoid-page}blockquote p{margin:.65em 0}code{font:90%/1.4 "Cascadia Mono",Consolas,monospace;background:var(--code);padding:.12em .3em;border-radius:3px}pre{overflow:auto;padding:1em 1.15em;background:var(--code);border:1px solid var(--line);border-radius:5px;break-inside:avoid-page}pre code{padding:0;background:none}ul,ol{padding-left:1.5em;margin:.5em 0 1em}li{margin:.25em 0;break-inside:avoid-page}hr{border:0;border-top:1px solid var(--line);margin:1.8em 0}figure{margin:1.35em auto;text-align:center;break-inside:avoid-page}img{display:block;max-width:100%;height:auto;margin:auto}figcaption{margin-top:.55em;color:var(--muted);font:13px/1.4 Arial,"Segoe UI",sans-serif}.image-alt{color:var(--muted);font-style:italic}
+table{width:100%;margin:1em 0;border-collapse:collapse;table-layout:fixed;font:10pt/1.4 Arial,"Segoe UI",sans-serif;break-inside:avoid-page}th,td{padding:.45em .6em;vertical-align:top;overflow-wrap:anywhere;word-break:break-word;border:1px solid var(--line)}th{color:#1e3865;background:#f3f5f7;font-weight:700}th code,td code{white-space:normal;overflow-wrap:anywhere;word-break:break-word}tr{break-inside:avoid-page}
+.pdf-table{width:100%;margin:1em 0;font:10pt/1.3 Arial,"Segoe UI",sans-serif}.pdf-table-row{display:flex;width:100%;flex-wrap:nowrap;break-inside:avoid-page;page-break-inside:avoid}.pdf-table-cell{min-width:0;padding:.32em .5em;vertical-align:top;overflow-wrap:anywhere;word-break:break-word;border:1px solid #d6dae0}.pdf-table-row--header{background:#f3f5f7;color:#1e3865;font-weight:700}.pdf-table-cell code{white-space:normal;overflow-wrap:anywhere;word-break:break-word}
 .heading-space{display:inline-block;width:.3em}
 .pdf-code-line{min-height:1.42em;margin:0;padding:0 1em;color:#242a32;background:#f3f5f7;border-left:1px solid #d6dae0;border-right:1px solid #d6dae0;font:9pt/1.42 Consolas,"Liberation Mono",monospace;break-inside:avoid-page}
 .pdf-code-line.is-first{padding-top:.75em;border-top:1px solid #d6dae0}.pdf-code-line.is-last{padding-bottom:.75em;margin-bottom:1em;border-bottom:1px solid #d6dae0}.pdf-code-space{display:inline-block;height:1px}.pdf-code-blank{color:#f3f5f7}
@@ -698,7 +943,115 @@ fn export_html(document: &ExportDocument) -> Result<Vec<u8>, ExportError> {
         .map_err(|e| ExportError::Package(e.to_string()))
 }
 
+#[cfg(windows)]
+fn edge_executable() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    for variable in ["ProgramFiles(x86)", "ProgramFiles", "LOCALAPPDATA"] {
+        if let Some(base) = env::var_os(variable) {
+            candidates.push(PathBuf::from(base).join("Microsoft/Edge/Application/msedge.exe"));
+        }
+    }
+    candidates.into_iter().find(|path| path.is_file())
+}
+
+#[cfg(windows)]
+fn safe_asset_path(directory: &Path, key: &str) -> Option<PathBuf> {
+    let relative = Path::new(key);
+    if relative
+        .components()
+        .all(|component| matches!(component, Component::Normal(_) | Component::CurDir))
+    {
+        Some(directory.join(relative))
+    } else {
+        None
+    }
+}
+
+#[cfg(windows)]
+fn export_pdf_with_edge(
+    document: &ExportDocument,
+    paper: PaperSize,
+) -> Result<Option<Vec<u8>>, ExportError> {
+    let Some(edge) = edge_executable() else {
+        return Ok(None);
+    };
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let directory = env::temp_dir().join(format!("med-pdf-{}-{nonce}", std::process::id()));
+    let profile = directory.join("profile");
+    let html_path = directory.join("document.html");
+    let pdf_path = directory.join("document.pdf");
+    fs::create_dir_all(&profile)?;
+
+    let result = (|| {
+        for asset in document.images.values() {
+            let path = safe_asset_path(&directory, &asset.key).ok_or_else(|| {
+                ExportError::Pdf(format!("invalid image path in PDF export: {}", asset.key))
+            })?;
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(path, &asset.bytes)?;
+        }
+
+        let print_css = format!(
+            "<style>@page{{size:{};margin:20mm}}@media print{{table{{break-inside:auto;page-break-inside:auto}}thead{{display:table-header-group}}tr{{break-inside:avoid-page;page-break-inside:avoid}}pre{{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;break-inside:auto;page-break-inside:auto}}}}</style>",
+            paper.css_name()
+        );
+        let html =
+            full_html(document, None, None).replace("</head>", &format!("{print_css}</head>"));
+        fs::write(&html_path, html)?;
+
+        let file_url = format!("file:///{}", html_path.to_string_lossy().replace('\\', "/"));
+        let mut command = Command::new(edge);
+        command
+            .arg("--headless=new")
+            .arg("--disable-gpu")
+            .arg("--disable-extensions")
+            .arg("--no-first-run")
+            .arg("--allow-file-access-from-files")
+            .arg("--no-pdf-header-footer")
+            .arg("--print-to-pdf-no-header")
+            .arg(format!("--user-data-dir={}", profile.display()))
+            .arg(format!("--print-to-pdf={}", pdf_path.display()))
+            .arg(file_url);
+        command.creation_flags(0x0800_0000);
+        let output = command.output()?;
+        if !output.status.success() {
+            let error = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(ExportError::Pdf(if error.is_empty() {
+                "Microsoft Edge could not render the document".into()
+            } else {
+                format!("Microsoft Edge could not render the document: {error}")
+            }));
+        }
+        let bytes = fs::read(&pdf_path)?;
+        if !bytes.starts_with(b"%PDF-") {
+            return Err(ExportError::Pdf(
+                "Microsoft Edge returned an invalid PDF document".into(),
+            ));
+        }
+        Ok(Some(bytes))
+    })();
+
+    let _ = fs::remove_dir_all(&directory);
+    result
+}
+
 fn export_pdf(document: &ExportDocument, paper: PaperSize) -> Result<Vec<u8>, ExportError> {
+    #[cfg(windows)]
+    if document
+        .blocks
+        .iter()
+        .any(|block| matches!(&block.kind, BlockKind::Table(_)))
+    {
+        if let Some(pdf) = export_pdf_with_edge(document, paper)? {
+            return Ok(pdf);
+        }
+    }
+
     let mut images = BTreeMap::new();
     for asset in document.images.values() {
         images.insert(asset.key.clone(), Base64OrRaw::Raw(asset.bytes.clone()));
@@ -1121,6 +1474,39 @@ mod tests {
     fn source_line_breaks_are_preserved() {
         let blocks = parse_blocks("one\ntwo");
         assert!(matches!(blocks[0].inlines[1], Inline::Break));
+    }
+
+    #[test]
+    fn tables_are_preserved_in_html_and_pdf_exports() {
+        let document = ExportDocument {
+            title: "Table".into(),
+            blocks: parse_blocks("| Name | Score |\n| :--- | ---: |\n| **Ada** | `42` |"),
+            images: HashMap::new(),
+        };
+
+        let BlockKind::Table(table) = &document.blocks[0].kind else {
+            panic!("GFM table was not parsed as a table block");
+        };
+        assert_eq!(table.header.len(), 2);
+        assert_eq!(table.rows.len(), 1);
+        assert_eq!(
+            table.alignments,
+            vec!["left".to_string(), "right".to_string()]
+        );
+
+        let html = full_html(&document, None, None);
+        assert!(html.contains("<table>"));
+        assert!(html.contains("<col style=\"width:"));
+        assert!(html.contains("<th style=\"text-align:left\">Name</th>"));
+        assert!(html.contains("<strong>Ada</strong>"));
+        let pdf_html = full_html(&document, None, Some(PaperSize::A4.code_columns()));
+        assert!(pdf_html.contains("pdf-table-row--header"));
+        assert!(pdf_html.contains("flex:0 0"));
+        assert!(
+            export_pdf(&document, PaperSize::A4)
+                .unwrap()
+                .starts_with(b"%PDF-")
+        );
     }
 
     #[test]

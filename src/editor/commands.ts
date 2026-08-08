@@ -1,5 +1,5 @@
-import { schema } from "prosemirror-markdown";
 import { TextSelection, type Command } from "prosemirror-state";
+import { markdownSchema } from "./markdown";
 
 /**
  * Inserts MED's single-line Markdown break inside ordinary paragraphs.
@@ -11,18 +11,18 @@ export const insertMarkdownLineBreak: Command = (state, dispatch) => {
   if (!(selection instanceof TextSelection)) return false;
 
   const { $from, $to } = selection;
-  if (!$from.sameParent($to) || $from.parent.type !== schema.nodes.paragraph) {
+  if (!$from.sameParent($to) || $from.parent.type !== markdownSchema.nodes.paragraph) {
     return false;
   }
 
   for (let depth = $from.depth - 1; depth > 0; depth -= 1) {
-    if ($from.node(depth).type === schema.nodes.list_item) return false;
+    if ($from.node(depth).type === markdownSchema.nodes.list_item) return false;
   }
 
   if (dispatch) {
     dispatch(
       state.tr
-        .replaceSelectionWith(schema.nodes.hard_break.create())
+        .replaceSelectionWith(markdownSchema.nodes.hard_break.create())
         .scrollIntoView(),
     );
   }

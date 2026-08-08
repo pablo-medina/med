@@ -12,12 +12,12 @@ import {
   wrappingInputRule,
 } from "prosemirror-inputrules";
 import { keymap } from "prosemirror-keymap";
-import { DOMParser as ProseMirrorDOMParser } from "prosemirror-model";
-import { schema } from "prosemirror-markdown";
-import { EditorState, type Command } from "prosemirror-state";
+import { DOMParser as ProseMirrorDOMParser, Fragment } from "prosemirror-model";
+import { EditorState, TextSelection, type Command } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
+import { goToNextCell, tableEditing } from "prosemirror-tables";
 import { insertMarkdownLineBreak } from "./commands";
-import { parseMarkdown, serializeMarkdown } from "./markdown";
+import { markdownSchema, parseMarkdown, serializeMarkdown } from "./markdown";
 
 export type BlockKind = "paragraph" | "heading1" | "heading2" | "heading3" | "code";
 
@@ -36,6 +36,7 @@ export interface RichEditorHandle {
   toggleBulletList: () => boolean;
   toggleOrderedList: () => boolean;
   toggleBlockquote: () => boolean;
+  insertTable: (rows: number, columns: number) => boolean;
   setLink: (href: string) => boolean;
   undo: () => boolean;
   redo: () => boolean;
@@ -51,7 +52,7 @@ interface RichEditorProps {
 function selectionState(view: EditorView): EditorSelectionState {
   const { from, to, $from } = view.state.selection;
   const hasMark = (name: "strong" | "em" | "link") => {
-    const mark = schema.marks[name];
+    const mark = markdownSchema.marks[name];
     if (from === to) {
       return Boolean(mark.isInSet(view.state.storedMarks ?? $from.marks()));
     }
@@ -60,9 +61,9 @@ function selectionState(view: EditorView): EditorSelectionState {
 
   const parent = $from.parent;
   let block: BlockKind = "paragraph";
-  if (parent.type === schema.nodes.heading) {
+  if (parent.type === markdownSchema.nodes.heading) {
     block = `heading${Math.min(parent.attrs.level, 3)}` as BlockKind;
-  } else if (parent.type === schema.nodes.code_block) {
+  } else if (parent.type === markdownSchema.nodes.code_block) {
     block = "code";
   }
 
@@ -77,15 +78,15 @@ function selectionState(view: EditorView): EditorSelectionState {
 function editorInputRules() {
   return inputRules({
     rules: [
-      textblockTypeInputRule(/^(#{1,6})\s$/, schema.nodes.heading, (match) => ({
+      textblockTypeInputRule(/^(#{1,6})\s$/, markdownSchema.nodes.heading, (match) => ({
         level: match[1].length,
       })),
-      textblockTypeInputRule(/^```$/, schema.nodes.code_block),
-      wrappingInputRule(/^\s*([-+*])\s$/, schema.nodes.bullet_list),
-      wrappingInputRule(/^(\d+)\.\s$/, schema.nodes.ordered_list, (match) => ({
+      textblockTypeInputRule(/^```$/, markdownSchema.nodes.code_block),
+      wrappingInputRule(/^\s*([-+*])\s$/, markdownSchema.nodes.bullet_list),
+      wrappingInputRule(/^(\d+)\.\s$/, markdownSchema.nodes.ordered_list, (match) => ({
         order: Number(match[1]),
       })),
-      wrappingInputRule(/^>\s$/, schema.nodes.blockquote),
+      wrappingInputRule(/^>\s$/, markdownSchema.nodes.blockquote),
     ],
   });
 }
@@ -105,20 +106,23 @@ export const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
       if (!mountRef.current) return;
 
       const state = EditorState.create({
-        schema,
+        schema: markdownSchema,
         doc: parseMarkdown(value),
         plugins: [
           history(),
           editorInputRules(),
           keymap({
             Enter: insertMarkdownLineBreak,
-            "Mod-b": toggleMark(schema.marks.strong),
-            "Mod-i": toggleMark(schema.marks.em),
+            Tab: goToNextCell(1),
+            "Shift-Tab": goToNextCell(-1),
+            "Mod-b": toggleMark(markdownSchema.marks.strong),
+            "Mod-i": toggleMark(markdownSchema.marks.em),
             "Mod-z": undo,
             "Mod-y": redo,
             "Mod-Shift-z": redo,
           }),
           keymap(baseKeymap),
+          tableEditing(),
         ],
       });
 
@@ -157,7 +161,7 @@ export const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
       if (!view || value === currentMarkdownRef.current) return;
       const nextDocument = parseMarkdown(value);
       const nextState = EditorState.create({
-        schema,
+        schema: markdownSchema,
         doc: nextDocument,
         plugins: view.state.plugins,
       });
@@ -177,18 +181,46 @@ export const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
 
       return {
         focus: () => viewRef.current?.focus(),
-        toggleBold: () => run(toggleMark(schema.marks.strong)),
-        toggleItalic: () => run(toggleMark(schema.marks.em)),
+        toggleBold: () => run(toggleMark(markdownSchema.marks.strong)),
+        toggleItalic: () => run(toggleMark(markdownSchema.marks.em)),
         setBlock: (block) => {
-          if (block === "paragraph") return run(setBlockType(schema.nodes.paragraph));
-          if (block === "code") return run(setBlockType(schema.nodes.code_block));
+          if (block === "paragraph") return run(setBlockType(markdownSchema.nodes.paragraph));
+          if (block === "code") return run(setBlockType(markdownSchema.nodes.code_block));
           const level = Number(block[block.length - 1]);
-          return run(setBlockType(schema.nodes.heading, { level }));
+          return run(setBlockType(markdownSchema.nodes.heading, { level }));
         },
-        toggleBulletList: () => run(wrapIn(schema.nodes.bullet_list)),
-        toggleOrderedList: () => run(wrapIn(schema.nodes.ordered_list)),
-        toggleBlockquote: () => run(wrapIn(schema.nodes.blockquote)),
-        setLink: (href) => run(toggleMark(schema.marks.link, { href })),
+        toggleBulletList: () => run(wrapIn(markdownSchema.nodes.bullet_list)),
+        toggleOrderedList: () => run(wrapIn(markdownSchema.nodes.ordered_list)),
+        toggleBlockquote: () => run(wrapIn(markdownSchema.nodes.blockquote)),
+        insertTable: (rows, columns) => {
+          const view = viewRef.current;
+          if (!view || rows < 1 || columns < 1) return false;
+          const { state } = view;
+          const makeCell = (type: "table_header" | "table_cell") =>
+            markdownSchema.nodes[type].createAndFill()!;
+          const table = markdownSchema.nodes.table.create(
+            null,
+            Fragment.fromArray(
+              Array.from({ length: rows }, (_, rowIndex) =>
+                markdownSchema.nodes.table_row.create(
+                  null,
+                  Fragment.fromArray(
+                    Array.from({ length: columns }, () =>
+                      makeCell(rowIndex === 0 ? "table_header" : "table_cell"),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          );
+          const insertAt = state.selection.from;
+          const transaction = state.tr.replaceSelectionWith(table);
+          transaction.setSelection(TextSelection.near(transaction.doc.resolve(insertAt + 4)));
+          view.dispatch(transaction.scrollIntoView());
+          view.focus();
+          return true;
+        },
+        setLink: (href) => run(toggleMark(markdownSchema.marks.link, { href })),
         undo: () => run(undo),
         redo: () => run(redo),
       };
@@ -201,6 +233,6 @@ export const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
 export function htmlToMarkdown(html: string): string {
   const wrapper = document.createElement("div");
   wrapper.innerHTML = html;
-  const documentNode = ProseMirrorDOMParser.fromSchema(schema).parse(wrapper);
+  const documentNode = ProseMirrorDOMParser.fromSchema(markdownSchema).parse(wrapper);
   return serializeMarkdown(documentNode);
 }

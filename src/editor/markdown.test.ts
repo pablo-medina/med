@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { schema } from "prosemirror-markdown";
 import { EditorState, TextSelection } from "prosemirror-state";
 import { insertMarkdownLineBreak } from "./commands";
 import {
   canonicalizeMarkdown,
+  markdownSchema,
   parseMarkdown,
   serializeMarkdown,
 } from "./markdown";
@@ -49,11 +49,11 @@ describe("canonicalizeMarkdown", () => {
   });
 
   it("serializes visual line breaks as one source newline", () => {
-    const document = schema.node("doc", null, [
-      schema.node("paragraph", null, [
-        schema.text("first line"),
-        schema.node("hard_break"),
-        schema.text("second line"),
+    const document = markdownSchema.node("doc", null, [
+      markdownSchema.node("paragraph", null, [
+        markdownSchema.text("first line"),
+        markdownSchema.node("hard_break"),
+        markdownSchema.text("second line"),
       ]),
     ]);
 
@@ -62,13 +62,30 @@ describe("canonicalizeMarkdown", () => {
       document.toJSON(),
     );
   });
+
+  it("parses and serializes GFM tables with inline formatting and alignment", () => {
+    const source = [
+      "| Name | Score |",
+      "| :--- | ---: |",
+      "| **Ada** | `42` |",
+    ].join("\n");
+
+    const document = parseMarkdown(source);
+
+    expect(document.firstChild?.type).toBe(markdownSchema.nodes.table);
+    expect(document.firstChild?.child(0).child(0).type).toBe(
+      markdownSchema.nodes.table_header,
+    );
+    expect(document.firstChild?.child(0).child(1).attrs.align).toBe("right");
+    expect(serializeMarkdown(document)).toBe(source);
+  });
 });
 
 describe("insertMarkdownLineBreak", () => {
   it("inserts one hard break when Enter is pressed in a paragraph", () => {
     const document = parseMarkdown("firstsecond");
     const state = EditorState.create({
-      schema,
+      schema: markdownSchema,
       doc: document,
       selection: TextSelection.create(document, 6),
     });
@@ -85,7 +102,7 @@ describe("insertMarkdownLineBreak", () => {
   it("lets the base keymap handle Enter in a list", () => {
     const document = parseMarkdown("* item");
     const state = EditorState.create({
-      schema,
+      schema: markdownSchema,
       doc: document,
       selection: TextSelection.create(document, 4),
     });
@@ -96,7 +113,7 @@ describe("insertMarkdownLineBreak", () => {
   it("lets the base keymap handle Enter in a heading", () => {
     const document = parseMarkdown("# Heading");
     const state = EditorState.create({
-      schema,
+      schema: markdownSchema,
       doc: document,
       selection: TextSelection.create(document, 4),
     });
