@@ -6,10 +6,42 @@
   scrollbar-color: var(--color-border-strong) var(--color-window);
 }
 
-.document-page,
+.document-page-stack {
+  --med-page-gap: 24px;
+  position: relative;
+  width: var(--med-page-width);
+  margin: 0 auto;
+}
+
+.document-sheet-layer {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  pointer-events: none;
+}
+
+.document-sheet {
+  position: absolute;
+  left: 0;
+  display: block;
+  width: var(--med-page-width);
+  height: var(--med-page-height);
+  background: var(--color-canvas);
+  border: 1px solid var(--color-border);
+  box-shadow: var(--shadow-page);
+}
+
+.document-content {
+  position: relative;
+  z-index: 1;
+  width: var(--med-page-width);
+  min-height: inherit;
+}
+
+.document-web,
 .preview-page {
-  width: min(816px, 100%);
-  min-height: max(100%, 960px);
+  width: min(960px, 100%);
+  min-height: 100%;
   margin: 0 auto;
   color: var(--color-text);
   background: var(--color-canvas);
@@ -21,16 +53,86 @@
   min-height: inherit;
 }
 
+.document-content .rich-editor,
+.document-content .med-document {
+  min-height: inherit;
+}
+
+.document-content .med-document h1,
+.document-content .med-document h2,
+.document-content .med-document h3,
+.document-content .med-document h4,
+.document-content .med-document h5,
+.document-content .med-document h6 {
+  margin: 1.35em 0 0.45em;
+}
+
+.document-content .med-document h1 { font-size: 16pt; }
+.document-content .med-document h2 { font-size: 13pt; }
+.document-content .med-document h3 { font-size: 12pt; }
+
+.document-content .med-document p,
+.document-content .med-document ul,
+.document-content .med-document ol,
+.document-content .med-document blockquote,
+.document-content .med-document pre,
+.document-content .med-document table {
+  margin-bottom: 0.8em;
+}
+
 .med-document {
   min-height: inherit;
   padding: 64px 68px 96px;
   color: var(--color-text);
   caret-color: var(--color-accent);
-  font-family: var(--font-document);
-  font-size: 17px;
-  line-height: 1.67;
+  font-family: var(--med-document-font, var(--font-document));
+  font-size: 11pt;
+  line-height: 1.62;
   user-select: text;
+  white-space: pre-wrap;
   word-break: break-word;
+}
+
+.document-content .med-document {
+  box-sizing: border-box;
+  width: var(--med-page-width);
+  padding: var(--med-page-margin-top) var(--med-page-margin-right)
+    var(--med-page-margin-bottom) var(--med-page-margin-left);
+}
+
+.document-web .med-document {
+  min-height: 100%;
+  padding: 56px 64px 88px;
+}
+
+.med-document--paginated > * {
+  --med-page-break-before: 0px;
+}
+
+.document-content .med-document.med-document--paginated > p,
+.document-content .med-document.med-document--paginated > ul,
+.document-content .med-document.med-document--paginated > ol,
+.document-content .med-document.med-document--paginated > blockquote,
+.document-content .med-document.med-document--paginated > pre,
+.document-content .med-document.med-document--paginated > table {
+  margin-top: var(--med-page-break-before);
+}
+
+.document-content .med-document--paginated > h1,
+.document-content .med-document--paginated > h2,
+.document-content .med-document--paginated > h3,
+.document-content .med-document--paginated > h4,
+.document-content .med-document--paginated > h5,
+.document-content .med-document--paginated > h6 {
+  margin-top: calc(1.35em + var(--med-page-break-before));
+}
+
+.document-content .med-document.med-document--paginated > hr {
+  margin-top: calc(2em + var(--med-page-break-before));
+}
+
+.document-content .med-document--paginated > :first-child {
+  margin-top: var(--med-page-break-before);
 }
 
 .med-document:focus {
@@ -62,7 +164,7 @@
 .med-document h6 {
   margin: 1.5em 0 0.55em;
   color: var(--color-text);
-  font-family: var(--font-ui);
+  font-family: inherit;
   font-weight: 680;
   line-height: 1.18;
   letter-spacing: -0.025em;
@@ -130,14 +232,13 @@
   max-width: 100%;
   border-collapse: collapse;
   border: 1px solid var(--color-border-strong);
-  font-size: 0.94em;
-  line-height: 1.45;
+  font: 10pt/1.4 var(--med-document-font, var(--font-document));
 }
 
 .med-document th,
 .med-document td {
   min-width: 6rem;
-  padding: 0.45em 0.65em;
+  padding: 0.45em 0.6em;
   vertical-align: top;
   border: 1px solid var(--color-border);
 }
@@ -145,7 +246,7 @@
 .med-document th {
   color: var(--color-text);
   background: var(--color-surface);
-  font-family: var(--font-ui);
+  font-family: inherit;
   font-weight: 680;
 }
 
@@ -257,5 +358,5 @@
 
 @media (max-width: 1000px) {
   .document-viewport { padding-inline: 16px; }
-  .med-document { padding-inline: 48px; }
+  .document-web .med-document { padding-inline: 48px; }
 }

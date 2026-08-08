@@ -1,11 +1,11 @@
 import { useState } from "react";
+import type { PageLayout } from "../document/pageLayout";
 import type { Translate } from "../i18n";
 import type { TranslationKey } from "../i18n/types";
-import type { ExportFormat, ExportOptions, PaperSize } from "../platform/export";
+import type { ExportFormat, ExportOptions } from "../platform/export";
 import { Button } from "./Button";
 
 const formats: ExportFormat[] = ["pdf", "docx", "odt", "html"];
-const paperSizes: PaperSize[] = ["a4", "letter", "legal", "a5"];
 
 export function ExportProgressDialog({
   t,
@@ -41,15 +41,16 @@ export function ExportProgressDialog({
 
 export function ExportDialog({
   t,
+  pageLayout,
   onCancel,
   onExport,
 }: {
   t: Translate;
+  pageLayout: PageLayout;
   onCancel: () => void;
   onExport: (options: ExportOptions) => void;
 }) {
   const [format, setFormat] = useState<ExportFormat>("pdf");
-  const [paperSize, setPaperSize] = useState<PaperSize>("a4");
   const [includeImages, setIncludeImages] = useState(true);
   const paginated = format !== "html";
 
@@ -58,7 +59,7 @@ export function ExportDialog({
       className="export-dialog"
       onSubmit={(event) => {
         event.preventDefault();
-        onExport({ format, paperSize, includeImages });
+        onExport({ format, includeImages, pageLayout });
       }}
     >
       <fieldset className="export-fieldset">
@@ -84,15 +85,15 @@ export function ExportDialog({
       </fieldset>
 
       {paginated && (
-        <label className="export-control">
+        <div className="export-control">
           <span>
             <strong>{t("export.paperSize")}</strong>
-            <small>{t("export.paperSize.description")}</small>
+            <small>{t("export.pageSetup.description")}</small>
           </span>
-          <select value={paperSize} onChange={(event) => setPaperSize(event.target.value as PaperSize)}>
-            {paperSizes.map((size) => <option value={size} key={size}>{t(`export.paperSize.${size}` as TranslationKey)}</option>)}
-          </select>
-        </label>
+          <strong className="export-control__value">
+            {t(`export.paperSize.${pageLayout.paperSize}` as TranslationKey)} · {t(`pageSetup.orientation.${pageLayout.orientation}` as TranslationKey)} · {t(`pageSetup.font.${pageLayout.fontFamily}` as TranslationKey)}
+          </strong>
+        </div>
       )}
 
       <label className="export-control export-control--checkbox">

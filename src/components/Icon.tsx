@@ -17,6 +17,7 @@ export type IconName =
   | "newDocument"
   | "numberedList"
   | "open"
+  | "pageSetup"
   | "quote"
   | "redo"
   | "restore"
@@ -45,6 +46,7 @@ const paths: Record<IconName, React.ReactNode> = {
   newDocument: <><path d="M7 3.5h6l4 4V20H7z"/><path d="M13 3.5v4h4M12 10v7M8.5 13.5h7"/></>,
   numberedList: <><path d="M10 7h10M10 12h10M10 17h10"/><path d="M4 5.5h1v3M3.5 8.5h2M3.5 11.5c.3-.5.7-.8 1.2-.8.7 0 1.2.4 1.2 1 0 1-2.3 1.5-2.3 2.8h2.5M3.6 16.2c.3-.4.7-.6 1.2-.6.7 0 1.2.4 1.2 1s-.5 1-1.2 1c.7 0 1.3.4 1.3 1s-.5 1.1-1.3 1.1c-.6 0-1.1-.2-1.4-.7"/></>,
   open: <><path d="M3.5 8h7l2 2H21l-2.5 9H5z"/><path d="M5 8V5h6l2 2h5v3"/></>,
+  pageSetup: <><path d="M6 3.5h9l3 3V20.5H6z"/><path d="M15 3.5v3h3M9 11h6M9 14h6M9 17h4"/><path d="M3.5 7v10"/></>,
   quote: <path d="M5 7h5v5H7c0 2 1 3 3 4M14 7h5v5h-3c0 2 1 3 3 4"/>,
   redo: <><path d="m15 7 4 4-4 4"/><path d="M19 11h-8a6 6 0 0 0-6 6"/></>,
   restore: <><rect x="5" y="8" width="11" height="11"/><path d="M8 8V5h11v11h-3"/></>,

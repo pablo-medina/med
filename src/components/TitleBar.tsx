@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../i18n";
 import {
   detectPlatform,
@@ -7,19 +7,42 @@ import {
   type DesktopPlatform,
 } from "../platform/window";
 import { Icon } from "./Icon";
+import { FileMenu } from "./FileMenu";
+import { AppLogo } from "./AppLogo";
 
 interface TitleBarProps {
   documentName: string;
   dirty: boolean;
+  onNew: () => void;
+  onOpen: () => void;
+  onSave: () => void;
+  onSaveAs: () => void;
+  onExport: () => void;
+  onPageSetup: () => void;
+  onPreferences: () => void;
+  onExit: () => void;
   onRequestClose: () => void;
 }
 
-export function TitleBar({ documentName, dirty, onRequestClose }: TitleBarProps) {
+export function TitleBar({
+  documentName,
+  dirty,
+  onNew,
+  onOpen,
+  onSave,
+  onSaveAs,
+  onExport,
+  onPageSetup,
+  onPreferences,
+  onExit,
+  onRequestClose,
+}: TitleBarProps) {
   const { t } = useI18n();
   const [desktopPlatform, setDesktopPlatform] = useState<DesktopPlatform>(
     detectPlatformFromNavigator,
   );
   const [maximized, setMaximized] = useState(false);
+  const maximizeInProgressRef = useRef(false);
 
   useEffect(() => {
     void detectPlatform().then(setDesktopPlatform);
@@ -33,20 +56,41 @@ export function TitleBar({ documentName, dirty, onRequestClose }: TitleBarProps)
   }, []);
 
   const toggleMaximize = async () => {
-    await platformWindow.toggleMaximize();
-    setMaximized(await platformWindow.isMaximized());
+    if (maximizeInProgressRef.current) return;
+    maximizeInProgressRef.current = true;
+    try {
+      await platformWindow.toggleMaximize();
+      setMaximized(await platformWindow.isMaximized());
+    } finally {
+      maximizeInProgressRef.current = false;
+    }
   };
 
   return (
     <header className="title-bar" data-platform={desktopPlatform}>
-      <div className="title-bar__brand" data-tauri-drag-region>
-        <span className="title-bar__mark" aria-hidden="true">M</span>
-        <span className="title-bar__app-name">{t("app.name")}</span>
+      <div className="title-bar__leading">
+        <AppLogo className="title-bar__mark" title={t("app.name")} />
+        <FileMenu
+          label={t("menu.file")}
+          items={[
+            { label: t("menu.file.new"), shortcut: "Ctrl+N", action: onNew },
+            { label: t("menu.file.open"), shortcut: "Ctrl+O", action: onOpen },
+            { separator: true },
+            { label: t("menu.file.save"), shortcut: "Ctrl+S", action: onSave },
+            { label: t("menu.file.saveAs"), shortcut: "Ctrl+Shift+S", action: onSaveAs },
+            { separator: true },
+            { label: t("menu.file.export"), action: onExport },
+            { label: t("pageSetup.title"), action: onPageSetup },
+            { separator: true },
+            { label: t("menu.file.preferences"), action: onPreferences },
+            { separator: true },
+            { label: t("menu.file.exit"), action: onExit },
+          ]}
+        />
       </div>
       <div
         className="title-bar__drag-region"
         data-tauri-drag-region
-        onDoubleClick={() => void toggleMaximize()}
       >
         <span className="title-bar__document-name">
           {documentName}

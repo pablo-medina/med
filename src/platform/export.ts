@@ -1,13 +1,13 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
+import type { PageLayout } from "../document/pageLayout";
 
 export type ExportFormat = "pdf" | "docx" | "odt" | "html";
-export type PaperSize = "a4" | "letter" | "legal" | "a5";
 
 export interface ExportOptions {
   format: ExportFormat;
-  paperSize: PaperSize;
   includeImages: boolean;
+  pageLayout: PageLayout;
 }
 
 interface ExportRequest extends ExportOptions {

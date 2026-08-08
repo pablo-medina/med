@@ -31,7 +31,7 @@ pub struct ExportRequest {
     source_path: Option<String>,
     destination_path: String,
     format: ExportFormat,
-    paper_size: PaperSize,
+    page_layout: PageLayout,
     include_images: bool,
     title: String,
 }
@@ -54,6 +54,79 @@ enum PaperSize {
     A5,
 }
 
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum PageOrientation {
+    Portrait,
+    Landscape,
+}
+
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum DocumentFont {
+    Georgia,
+    Cambria,
+    Calibri,
+    Arial,
+    TimesNewRoman,
+}
+
+impl DocumentFont {
+    fn css_family(self) -> &'static str {
+        match self {
+            Self::Georgia => "Georgia, 'Times New Roman', serif",
+            Self::Cambria => "Cambria, Georgia, 'Times New Roman', serif",
+            Self::Calibri => "Calibri, 'Segoe UI', Arial, sans-serif",
+            Self::Arial => "Arial, 'Segoe UI', sans-serif",
+            Self::TimesNewRoman => "'Times New Roman', Times, serif",
+        }
+    }
+
+    fn office_family(self) -> &'static str {
+        match self {
+            Self::Georgia => "Georgia",
+            Self::Cambria => "Cambria",
+            Self::Calibri => "Calibri",
+            Self::Arial => "Arial",
+            Self::TimesNewRoman => "Times New Roman",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+struct PageMargins {
+    top: f32,
+    right: f32,
+    bottom: f32,
+    left: f32,
+}
+
+#[derive(Debug, Deserialize, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+struct PageLayout {
+    paper_size: PaperSize,
+    orientation: PageOrientation,
+    font_family: DocumentFont,
+    margins: PageMargins,
+}
+
+impl Default for PageLayout {
+    fn default() -> Self {
+        Self {
+            paper_size: PaperSize::A4,
+            orientation: PageOrientation::Portrait,
+            font_family: DocumentFont::Georgia,
+            margins: PageMargins {
+                top: 20.0,
+                right: 20.0,
+                bottom: 20.0,
+                left: 20.0,
+            },
+        }
+    }
+}
+
 impl PaperSize {
     fn millimeters(self) -> (f32, f32) {
         match self {
@@ -72,23 +145,43 @@ impl PaperSize {
             Self::A5 => (8_391, 11_906),
         }
     }
+}
 
-    fn code_columns(self) -> usize {
-        match self {
-            Self::A4 => 82,
-            Self::Letter | Self::Legal => 86,
-            Self::A5 => 54,
+impl PageLayout {
+    fn millimeters(self) -> (f32, f32) {
+        let (width, height) = self.paper_size.millimeters();
+        match self.orientation {
+            PageOrientation::Portrait => (width, height),
+            PageOrientation::Landscape => (height, width),
         }
     }
 
-    #[cfg(windows)]
-    fn css_name(self) -> &'static str {
-        match self {
-            Self::A4 => "A4",
-            Self::Letter => "Letter",
-            Self::Legal => "Legal",
-            Self::A5 => "A5",
+    fn twips(self) -> (u32, u32) {
+        let (width, height) = self.paper_size.twips();
+        match self.orientation {
+            PageOrientation::Portrait => (width, height),
+            PageOrientation::Landscape => (height, width),
         }
+    }
+
+    fn margin_twips(millimeters: f32) -> i32 {
+        (millimeters / 25.4 * 1440.0).round().max(0.0) as i32
+    }
+
+    fn code_columns(self) -> usize {
+        let (width, _) = self.millimeters();
+        let content_width = (width - self.margins.left - self.margins.right).max(40.0);
+        (content_width / 170.0 * 82.0).round().clamp(32.0, 140.0) as usize
+    }
+
+    fn is_valid(self) -> bool {
+        let (width, height) = self.millimeters();
+        let margins = self.margins;
+        [margins.top, margins.right, margins.bottom, margins.left]
+            .into_iter()
+            .all(|margin| margin.is_finite() && (5.0..=60.0).contains(&margin))
+            && margins.left + margins.right <= width - 40.0
+            && margins.top + margins.bottom <= height - 40.0
     }
 }
 
@@ -258,7 +351,6 @@ fn parse_blocks(markdown: &str) -> Vec<Block> {
                     kind: BlockKind::Code,
                     inlines: Vec::new(),
                 });
-                style.code = true;
             }
             Event::Start(Tag::List(start)) => lists.push(start.is_some()),
             Event::Start(Tag::Item) => {
@@ -393,9 +485,13 @@ fn parse_blocks(markdown: &str) -> Vec<Block> {
                     });
                 }
             }
-            Event::End(
-                TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::CodeBlock | TagEnd::Item,
-            ) => finish(&mut current, &mut blocks),
+            Event::End(TagEnd::CodeBlock) => {
+                finish(&mut current, &mut blocks);
+                style.code = false;
+            }
+            Event::End(TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::Item) => {
+                finish(&mut current, &mut blocks)
+            }
             Event::End(TagEnd::BlockQuote(_)) => quote_depth = quote_depth.saturating_sub(1),
             Event::End(TagEnd::List(_)) => {
                 lists.pop();
@@ -897,10 +993,10 @@ fn inline_html(
 
 const DOCUMENT_CSS: &str = r#"
 :root{color-scheme:light;--ink:#20252b;--muted:#626b78;--accent:#315fc7;--line:#d6dae0;--paper:#fff;--code:#f3f5f7}
-*{box-sizing:border-box}html{background:#eef1f4}body{max-width:860px;margin:40px auto;padding:72px 82px;background:var(--paper);color:var(--ink);font:17px/1.62 Cambria,Georgia,"Times New Roman",serif;box-shadow:0 5px 24px rgba(24,30,39,.12)}
-h1,h2,h3,h4,h5,h6{font-family:Cambria,Georgia,"Times New Roman",serif;font-weight:700;color:#1e3865;line-height:1.2;margin:1.35em 0 .45em;break-after:avoid-page}h1{font-size:2em}h2{font-size:1.55em}h3{font-size:1.25em}p{margin:0 0 .8em;orphans:3;widows:3}a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}strong{font-weight:700}blockquote{margin:1.2em 0;padding:.15em 1.2em;border-left:4px solid var(--accent);color:#4b5563;background:#f6f8fc;break-inside:avoid-page}blockquote p{margin:.65em 0}code{font:90%/1.4 "Cascadia Mono",Consolas,monospace;background:var(--code);padding:.12em .3em;border-radius:3px}pre{overflow:auto;padding:1em 1.15em;background:var(--code);border:1px solid var(--line);border-radius:5px;break-inside:avoid-page}pre code{padding:0;background:none}ul,ol{padding-left:1.5em;margin:.5em 0 1em}li{margin:.25em 0;break-inside:avoid-page}hr{border:0;border-top:1px solid var(--line);margin:1.8em 0}figure{margin:1.35em auto;text-align:center;break-inside:avoid-page}img{display:block;max-width:100%;height:auto;margin:auto}figcaption{margin-top:.55em;color:var(--muted);font:13px/1.4 Arial,"Segoe UI",sans-serif}.image-alt{color:var(--muted);font-style:italic}
-table{width:100%;margin:1em 0;border-collapse:collapse;table-layout:fixed;font:10pt/1.4 Arial,"Segoe UI",sans-serif;break-inside:avoid-page}th,td{padding:.45em .6em;vertical-align:top;overflow-wrap:anywhere;word-break:break-word;border:1px solid var(--line)}th{color:#1e3865;background:#f3f5f7;font-weight:700}th code,td code{white-space:normal;overflow-wrap:anywhere;word-break:break-word}tr{break-inside:avoid-page}
-.pdf-table{width:100%;margin:1em 0;font:10pt/1.3 Arial,"Segoe UI",sans-serif}.pdf-table-row{display:flex;width:100%;flex-wrap:nowrap;break-inside:avoid-page;page-break-inside:avoid}.pdf-table-cell{min-width:0;padding:.32em .5em;vertical-align:top;overflow-wrap:anywhere;word-break:break-word;border:1px solid #d6dae0}.pdf-table-row--header{background:#f3f5f7;color:#1e3865;font-weight:700}.pdf-table-cell code{white-space:normal;overflow-wrap:anywhere;word-break:break-word}
+*{box-sizing:border-box}html{background:#eef1f4}body{max-width:860px;margin:40px auto;padding:72px 82px;background:var(--paper);color:var(--ink);font-family:var(--document-font,Georgia,"Times New Roman",serif);font-size:17px;line-height:1.62;box-shadow:0 5px 24px rgba(24,30,39,.12)}
+h1,h2,h3,h4,h5,h6{font-family:inherit;font-weight:700;color:#1e3865;line-height:1.2;margin:1.35em 0 .45em;break-after:avoid-page}h1{font-size:2em}h2{font-size:1.55em}h3{font-size:1.25em}p{margin:0 0 .8em;orphans:3;widows:3}a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}strong{font-weight:700}blockquote{margin:1.2em 0;padding:.15em 1.2em;border-left:4px solid var(--accent);color:#4b5563;background:#f6f8fc;break-inside:avoid-page}blockquote p{margin:.65em 0}code{font:90%/1.4 "Cascadia Mono",Consolas,monospace;background:var(--code);padding:.12em .3em;border-radius:3px}pre{overflow:auto;padding:1em 1.15em;background:var(--code);border:1px solid var(--line);border-radius:5px;break-inside:avoid-page}pre code{padding:0;background:none}ul,ol{padding-left:1.5em;margin:.5em 0 1em}li{margin:.25em 0;break-inside:avoid-page}hr{border:0;border-top:1px solid var(--line);margin:1.8em 0}figure{margin:1.35em auto;text-align:center;break-inside:avoid-page}img{display:block;max-width:100%;height:auto;margin:auto}figcaption{margin-top:.55em;color:var(--muted);font-size:13px;line-height:1.4}.image-alt{color:var(--muted);font-style:italic}
+table{width:100%;margin:1em 0;border-collapse:collapse;table-layout:fixed;font-family:inherit;font-size:10pt;line-height:1.4;break-inside:avoid-page}th,td{padding:.45em .6em;vertical-align:top;overflow-wrap:anywhere;word-break:break-word;border:1px solid var(--line)}th{color:#1e3865;background:#f3f5f7;font-weight:700}th code,td code{white-space:normal;overflow-wrap:anywhere;word-break:break-word}tr{break-inside:avoid-page}
+.pdf-table{width:100%;margin:1em 0;font-family:inherit;font-size:10pt;line-height:1.3}.pdf-table-row{display:flex;width:100%;flex-wrap:nowrap;break-inside:avoid-page;page-break-inside:avoid}.pdf-table-cell{min-width:0;padding:.32em .5em;vertical-align:top;overflow-wrap:anywhere;word-break:break-word;border:1px solid #d6dae0}.pdf-table-row--header{background:#f3f5f7;color:#1e3865;font-weight:700}.pdf-table-cell code{white-space:normal;overflow-wrap:anywhere;word-break:break-word}
 .heading-space{display:inline-block;width:.3em}
 .pdf-code-line{min-height:1.42em;margin:0;padding:0 1em;color:#242a32;background:#f3f5f7;border-left:1px solid #d6dae0;border-right:1px solid #d6dae0;font:9pt/1.42 Consolas,"Liberation Mono",monospace;break-inside:avoid-page}
 .pdf-code-line.is-first{padding-top:.75em;border-top:1px solid #d6dae0}.pdf-code-line.is-last{padding-bottom:.75em;margin-bottom:1em;border-bottom:1px solid #d6dae0}.pdf-code-space{display:inline-block;height:1px}.pdf-code-blank{color:#f3f5f7}
@@ -912,24 +1008,37 @@ fn full_html(
     document: &ExportDocument,
     css_href: Option<&str>,
     pdf_code_columns: Option<usize>,
+    font_family: DocumentFont,
 ) -> String {
     let styles = css_href
         .map(|href| format!("<link rel=\"stylesheet\" href=\"{href}\">"))
         .unwrap_or_else(|| format!("<style>{DOCUMENT_CSS}</style>"));
+    let font_style = format!(
+        "<style>:root{{--document-font:{}}}</style>",
+        font_family.css_family()
+    );
     format!(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{}</title>{styles}</head><body><main>{}</main></body></html>",
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{}</title>{styles}{font_style}</head><body><main>{}</main></body></html>",
         escape_html(&document.title),
         html_body(document, pdf_code_columns)
     )
 }
 
-fn export_html(document: &ExportDocument) -> Result<Vec<u8>, ExportError> {
+fn export_html(document: &ExportDocument, page_layout: PageLayout) -> Result<Vec<u8>, ExportError> {
     let cursor = Cursor::new(Vec::new());
     let mut zip = zip::ZipWriter::new(cursor);
     let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     zip.start_file("index.html", options)
         .map_err(|e| ExportError::Package(e.to_string()))?;
-    zip.write_all(full_html(document, Some("assets/styles.css"), None).as_bytes())?;
+    zip.write_all(
+        full_html(
+            document,
+            Some("assets/styles.css"),
+            None,
+            page_layout.font_family,
+        )
+        .as_bytes(),
+    )?;
     zip.start_file("assets/styles.css", options)
         .map_err(|e| ExportError::Package(e.to_string()))?;
     zip.write_all(DOCUMENT_CSS.as_bytes())?;
@@ -970,7 +1079,7 @@ fn safe_asset_path(directory: &Path, key: &str) -> Option<PathBuf> {
 #[cfg(windows)]
 fn export_pdf_with_edge(
     document: &ExportDocument,
-    paper: PaperSize,
+    page_layout: PageLayout,
 ) -> Result<Option<Vec<u8>>, ExportError> {
     let Some(edge) = edge_executable() else {
         return Ok(None);
@@ -996,12 +1105,14 @@ fn export_pdf_with_edge(
             fs::write(path, &asset.bytes)?;
         }
 
+        let (width, height) = page_layout.millimeters();
+        let margins = page_layout.margins;
         let print_css = format!(
-            "<style>@page{{size:{};margin:20mm}}@media print{{table{{break-inside:auto;page-break-inside:auto}}thead{{display:table-header-group}}tr{{break-inside:avoid-page;page-break-inside:avoid}}pre{{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;break-inside:auto;page-break-inside:auto}}}}</style>",
-            paper.css_name()
+            "<style>@page{{size:{width}mm {height}mm;margin:{}mm {}mm {}mm {}mm}}@media print{{table{{break-inside:auto;page-break-inside:auto}}thead{{display:table-header-group}}tr{{break-inside:avoid-page;page-break-inside:avoid}}pre{{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;break-inside:auto;page-break-inside:auto}}}}</style>",
+            margins.top, margins.right, margins.bottom, margins.left
         );
-        let html =
-            full_html(document, None, None).replace("</head>", &format!("{print_css}</head>"));
+        let html = full_html(document, None, None, page_layout.font_family)
+            .replace("</head>", &format!("{print_css}</head>"));
         fs::write(&html_path, html)?;
 
         let file_url = format!("file:///{}", html_path.to_string_lossy().replace('\\', "/"));
@@ -1040,14 +1151,14 @@ fn export_pdf_with_edge(
     result
 }
 
-fn export_pdf(document: &ExportDocument, paper: PaperSize) -> Result<Vec<u8>, ExportError> {
+fn export_pdf(document: &ExportDocument, page_layout: PageLayout) -> Result<Vec<u8>, ExportError> {
     #[cfg(windows)]
     if document
         .blocks
         .iter()
         .any(|block| matches!(&block.kind, BlockKind::Table(_)))
     {
-        if let Some(pdf) = export_pdf_with_edge(document, paper)? {
+        if let Some(pdf) = export_pdf_with_edge(document, page_layout)? {
             return Ok(pdf);
         }
     }
@@ -1056,20 +1167,26 @@ fn export_pdf(document: &ExportDocument, paper: PaperSize) -> Result<Vec<u8>, Ex
     for asset in document.images.values() {
         images.insert(asset.key.clone(), Base64OrRaw::Raw(asset.bytes.clone()));
     }
-    let (width, height) = paper.millimeters();
+    let (width, height) = page_layout.millimeters();
+    let margins = page_layout.margins;
     let options = GeneratePdfOptions {
         page_width: Some(width),
         page_height: Some(height),
-        margin_top: Some(20.0),
-        margin_right: Some(20.0),
-        margin_bottom: Some(20.0),
-        margin_left: Some(20.0),
+        margin_top: Some(margins.top),
+        margin_right: Some(margins.right),
+        margin_bottom: Some(margins.bottom),
+        margin_left: Some(margins.left),
         show_page_numbers: Some(true),
         footer_text: Some(document.title.clone()),
         skip_first_page: Some(false),
         ..Default::default()
     };
-    let html = full_html(document, None, Some(paper.code_columns()));
+    let html = full_html(
+        document,
+        None,
+        Some(page_layout.code_columns()),
+        page_layout.font_family,
+    );
     if html.contains("<pre") {
         return Err(ExportError::Pdf(
             "the PDF renderer received an unsplittable preformatted block".into(),
@@ -1081,18 +1198,18 @@ fn export_pdf(document: &ExportDocument, paper: PaperSize) -> Result<Vec<u8>, Ex
     Ok(pdf.save(&PdfSaveOptions::default(), &mut warnings))
 }
 
-fn docx_run(text: &str, style: &TextStyle) -> Run {
+fn docx_run(text: &str, style: &TextStyle, document_font: DocumentFont) -> Run {
     let mut run = Run::new().add_text(text).fonts(
         RunFonts::new()
             .ascii(if style.code {
                 "Cascadia Mono"
             } else {
-                "Calibri"
+                document_font.office_family()
             })
             .hi_ansi(if style.code {
                 "Cascadia Mono"
             } else {
-                "Calibri"
+                document_font.office_family()
             }),
     );
     if style.bold {
@@ -1110,26 +1227,35 @@ fn docx_run(text: &str, style: &TextStyle) -> Run {
     run
 }
 
-fn export_docx(document: &ExportDocument, paper: PaperSize) -> Result<Vec<u8>, ExportError> {
+fn export_docx(document: &ExportDocument, page_layout: PageLayout) -> Result<Vec<u8>, ExportError> {
     let body_spacing = LineSpacing::new()
         .after(120)
         .line(264)
         .line_rule(LineSpacingType::Auto);
+    let (page_width, page_height) = page_layout.twips();
+    let margins = page_layout.margins;
+    let margin_left = PageLayout::margin_twips(margins.left);
+    let margin_right = PageLayout::margin_twips(margins.right);
+    let document_font = page_layout.font_family.office_family();
     let mut docx = Docx::new()
-        .page_size(paper.twips().0, paper.twips().1)
+        .page_size(page_width, page_height)
+        .page_orient(match page_layout.orientation {
+            PageOrientation::Portrait => PageOrientationType::Portrait,
+            PageOrientation::Landscape => PageOrientationType::Landscape,
+        })
         .page_margin(
             PageMargin::new()
-                .top(1134)
-                .right(1134)
-                .bottom(1134)
-                .left(1134)
+                .top(PageLayout::margin_twips(margins.top))
+                .right(margin_right)
+                .bottom(PageLayout::margin_twips(margins.bottom))
+                .left(margin_left)
                 .header(709)
                 .footer(709),
         )
         .add_style(
             Style::new("Normal", StyleType::Paragraph)
                 .name("Normal")
-                .fonts(RunFonts::new().ascii("Calibri").hi_ansi("Calibri"))
+                .fonts(RunFonts::new().ascii(document_font).hi_ansi(document_font))
                 .size(22)
                 .color("20252B")
                 .line_spacing(body_spacing.clone()),
@@ -1137,7 +1263,7 @@ fn export_docx(document: &ExportDocument, paper: PaperSize) -> Result<Vec<u8>, E
         .add_style(
             Style::new("MEDHeading1", StyleType::Paragraph)
                 .name("Heading 1")
-                .fonts(RunFonts::new().ascii("Calibri").hi_ansi("Calibri"))
+                .fonts(RunFonts::new().ascii(document_font).hi_ansi(document_font))
                 .size(32)
                 .bold()
                 .color("2E5A9E")
@@ -1146,7 +1272,7 @@ fn export_docx(document: &ExportDocument, paper: PaperSize) -> Result<Vec<u8>, E
         .add_style(
             Style::new("MEDHeading2", StyleType::Paragraph)
                 .name("Heading 2")
-                .fonts(RunFonts::new().ascii("Calibri").hi_ansi("Calibri"))
+                .fonts(RunFonts::new().ascii(document_font).hi_ansi(document_font))
                 .size(26)
                 .bold()
                 .color("2E5A9E")
@@ -1155,7 +1281,7 @@ fn export_docx(document: &ExportDocument, paper: PaperSize) -> Result<Vec<u8>, E
         .add_style(
             Style::new("MEDHeading3", StyleType::Paragraph)
                 .name("Heading 3")
-                .fonts(RunFonts::new().ascii("Calibri").hi_ansi("Calibri"))
+                .fonts(RunFonts::new().ascii(document_font).hi_ansi(document_font))
                 .size(24)
                 .bold()
                 .color("1F4D78")
@@ -1198,7 +1324,7 @@ fn export_docx(document: &ExportDocument, paper: PaperSize) -> Result<Vec<u8>, E
         )
         .add_numbering(Numbering::new(2, 2));
 
-    let content_width_twips = paper.twips().0.saturating_sub(2268);
+    let content_width_twips = page_width.saturating_sub((margin_left + margin_right).max(0) as u32);
     let max_width_emu = content_width_twips * 635;
     for block in &document.blocks {
         if matches!(block.kind, BlockKind::Rule) {
@@ -1243,7 +1369,7 @@ fn export_docx(document: &ExportDocument, paper: PaperSize) -> Result<Vec<u8>, E
         for inline in &block.inlines {
             match inline {
                 Inline::Text(text, style) => {
-                    let run = docx_run(text, style);
+                    let run = docx_run(text, style, page_layout.font_family);
                     paragraph = if let Some(link) = &style.link {
                         paragraph.add_hyperlink(
                             Hyperlink::new(link, HyperlinkType::External).add_run(run),
@@ -1342,7 +1468,7 @@ fn odt_inline(inlines: &[Inline], images: &HashMap<String, ImageAsset>) -> Strin
     xml
 }
 
-fn export_odt(document: &ExportDocument, paper: PaperSize) -> Result<Vec<u8>, ExportError> {
+fn export_odt(document: &ExportDocument, page_layout: PageLayout) -> Result<Vec<u8>, ExportError> {
     let mut body = String::new();
     let mut list_open: Option<bool> = None;
     for block in &document.blocks {
@@ -1378,12 +1504,19 @@ fn export_odt(document: &ExportDocument, paper: PaperSize) -> Result<Vec<u8>, Ex
     if list_open.is_some() {
         body.push_str("</text:list>");
     }
-    let (w, h) = paper.millimeters();
+    let (w, h) = page_layout.millimeters();
+    let margins = page_layout.margins;
+    let orientation = match page_layout.orientation {
+        PageOrientation::Portrait => "portrait",
+        PageOrientation::Landscape => "landscape",
+    };
+    let document_font = page_layout.font_family.office_family();
     let content_xml = format!(
         r##"<?xml version="1.0" encoding="UTF-8"?><office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" office:version="1.3"><office:automatic-styles><text:list-style style:name="BulletList" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0"><text:list-level-style-bullet text:level="1" text:bullet-char="•"/></text:list-style><text:list-style style:name="NumberList" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0"><text:list-level-style-number text:level="1" style:num-format="1"/></text:list-style></office:automatic-styles><office:body><office:text>{body}</office:text></office:body></office:document-content>"##
     );
     let styles_xml = format!(
-        r##"<?xml version="1.0" encoding="UTF-8"?><office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" office:version="1.3"><office:styles><style:default-style style:family="paragraph"><style:text-properties style:font-name="Liberation Serif" fo:font-size="11pt"/><style:paragraph-properties fo:line-height="120%" fo:margin-bottom="0.21cm"/></style:default-style><style:style style:name="Body" style:family="paragraph"/><style:style style:name="Heading1" style:family="paragraph"><style:paragraph-properties fo:margin-top="0.56cm" fo:margin-bottom="0.28cm" fo:keep-with-next="always"/><style:text-properties style:font-name="Liberation Sans" fo:font-size="16pt" fo:font-weight="bold" fo:color="#2e5a9e"/></style:style><style:style style:name="Heading2" style:family="paragraph"><style:paragraph-properties fo:margin-top="0.42cm" fo:margin-bottom="0.21cm" fo:keep-with-next="always"/><style:text-properties style:font-name="Liberation Sans" fo:font-size="13pt" fo:font-weight="bold" fo:color="#2e5a9e"/></style:style><style:style style:name="Heading3" style:family="paragraph"><style:paragraph-properties fo:margin-top="0.28cm" fo:margin-bottom="0.14cm" fo:keep-with-next="always"/><style:text-properties style:font-name="Liberation Sans" fo:font-size="12pt" fo:font-weight="bold" fo:color="#1f4d78"/></style:style><style:style style:name="Quote" style:family="paragraph"><style:paragraph-properties fo:margin-left="0.5cm" fo:border-left="0.08cm solid #315fc7" fo:padding-left="0.35cm" fo:keep-together="always"/><style:text-properties fo:font-style="italic" fo:color="#4b5563"/></style:style><style:style style:name="CodeBlock" style:family="paragraph"><style:paragraph-properties fo:background-color="#f3f5f7" fo:padding="0.3cm" fo:keep-together="always"/><style:text-properties style:font-name="Liberation Mono" fo:font-size="9.5pt"/></style:style><style:style style:name="Rule" style:family="paragraph"><style:paragraph-properties fo:border-bottom="0.02cm solid #d6dae0" fo:margin-bottom="0.4cm"/></style:style><style:style style:name="Bold" style:family="text"><style:text-properties fo:font-weight="bold"/></style:style><style:style style:name="Italic" style:family="text"><style:text-properties fo:font-style="italic"/></style:style><style:style style:name="BoldItalic" style:family="text"><style:text-properties fo:font-weight="bold" fo:font-style="italic"/></style:style><style:style style:name="Code" style:family="text"><style:text-properties style:font-name="Liberation Mono" fo:font-size="9.5pt" fo:background-color="#f3f5f7"/></style:style><style:style style:name="Link" style:family="text"><style:text-properties fo:color="#315fc7" style:text-underline-style="solid"/></style:style><style:style style:name="Default" style:family="text"/></office:styles><office:automatic-styles><style:page-layout style:name="MEDPage"><style:page-layout-properties fo:page-width="{w}mm" fo:page-height="{h}mm" style:print-orientation="portrait" fo:margin="20mm"/></style:page-layout></office:automatic-styles><office:master-styles><style:master-page style:name="Standard" style:page-layout-name="MEDPage"/></office:master-styles></office:document-styles>"##
+        r##"<?xml version="1.0" encoding="UTF-8"?><office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" office:version="1.3"><office:styles><style:default-style style:family="paragraph"><style:text-properties style:font-name="{document_font}" fo:font-size="11pt"/><style:paragraph-properties fo:line-height="120%" fo:margin-bottom="0.21cm"/></style:default-style><style:style style:name="Body" style:family="paragraph"/><style:style style:name="Heading1" style:family="paragraph"><style:paragraph-properties fo:margin-top="0.56cm" fo:margin-bottom="0.28cm" fo:keep-with-next="always"/><style:text-properties style:font-name="{document_font}" fo:font-size="16pt" fo:font-weight="bold" fo:color="#2e5a9e"/></style:style><style:style style:name="Heading2" style:family="paragraph"><style:paragraph-properties fo:margin-top="0.42cm" fo:margin-bottom="0.21cm" fo:keep-with-next="always"/><style:text-properties style:font-name="{document_font}" fo:font-size="13pt" fo:font-weight="bold" fo:color="#2e5a9e"/></style:style><style:style style:name="Heading3" style:family="paragraph"><style:paragraph-properties fo:margin-top="0.28cm" fo:margin-bottom="0.14cm" fo:keep-with-next="always"/><style:text-properties style:font-name="{document_font}" fo:font-size="12pt" fo:font-weight="bold" fo:color="#1f4d78"/></style:style><style:style style:name="Quote" style:family="paragraph"><style:paragraph-properties fo:margin-left="0.5cm" fo:border-left="0.08cm solid #315fc7" fo:padding-left="0.35cm" fo:keep-together="always"/><style:text-properties fo:font-style="italic" fo:color="#4b5563"/></style:style><style:style style:name="CodeBlock" style:family="paragraph"><style:paragraph-properties fo:background-color="#f3f5f7" fo:padding="0.3cm" fo:keep-together="always"/><style:text-properties style:font-name="Liberation Mono" fo:font-size="9.5pt"/></style:style><style:style style:name="Rule" style:family="paragraph"><style:paragraph-properties fo:border-bottom="0.02cm solid #d6dae0" fo:margin-bottom="0.4cm"/></style:style><style:style style:name="Bold" style:family="text"><style:text-properties fo:font-weight="bold"/></style:style><style:style style:name="Italic" style:family="text"><style:text-properties fo:font-style="italic"/></style:style><style:style style:name="BoldItalic" style:family="text"><style:text-properties fo:font-weight="bold" fo:font-style="italic"/></style:style><style:style style:name="Code" style:family="text"><style:text-properties style:font-name="Liberation Mono" fo:font-size="9.5pt" fo:background-color="#f3f5f7"/></style:style><style:style style:name="Link" style:family="text"><style:text-properties fo:color="#315fc7" style:text-underline-style="solid"/></style:style><style:style style:name="Default" style:family="text"/></office:styles><office:automatic-styles><style:page-layout style:name="MEDPage"><style:page-layout-properties fo:page-width="{w}mm" fo:page-height="{h}mm" style:print-orientation="{orientation}" fo:margin-top="{}mm" fo:margin-right="{}mm" fo:margin-bottom="{}mm" fo:margin-left="{}mm"/></style:page-layout></office:automatic-styles><office:master-styles><style:master-page style:name="Standard" style:page-layout-name="MEDPage"/></office:master-styles></office:document-styles>"##,
+        margins.top, margins.right, margins.bottom, margins.left
     );
     let manifest_images = document.images.values().map(|asset| format!("<manifest:file-entry manifest:full-path=\"Pictures/{}\" manifest:media-type=\"{}\"/>", escape_xml(&asset.file_name), asset.media_type)).collect::<String>();
     let manifest = format!(
@@ -1441,6 +1574,9 @@ fn atomic_write(destination: &Path, bytes: &[u8]) -> Result<(), ExportError> {
 
 pub fn export(request: ExportRequest, cancellation: &AtomicBool) -> Result<(), String> {
     check_cancelled(cancellation).map_err(|e| e.to_string())?;
+    if !request.page_layout.is_valid() {
+        return Err("The page size and margins do not leave a valid content area.".into());
+    }
     let blocks = parse_blocks(&request.markdown);
     let images = resolve_images(
         &blocks,
@@ -1456,10 +1592,10 @@ pub fn export(request: ExportRequest, cancellation: &AtomicBool) -> Result<(), S
         images,
     };
     let bytes = match request.format {
-        ExportFormat::Pdf => export_pdf(&document, request.paper_size),
-        ExportFormat::Docx => export_docx(&document, request.paper_size),
-        ExportFormat::Odt => export_odt(&document, request.paper_size),
-        ExportFormat::Html => export_html(&document),
+        ExportFormat::Pdf => export_pdf(&document, request.page_layout),
+        ExportFormat::Docx => export_docx(&document, request.page_layout),
+        ExportFormat::Odt => export_odt(&document, request.page_layout),
+        ExportFormat::Html => export_html(&document, request.page_layout),
     }
     .map_err(|e| e.to_string())?;
     check_cancelled(cancellation).map_err(|e| e.to_string())?;
@@ -1494,16 +1630,21 @@ mod tests {
             vec!["left".to_string(), "right".to_string()]
         );
 
-        let html = full_html(&document, None, None);
+        let html = full_html(&document, None, None, DocumentFont::Georgia);
         assert!(html.contains("<table>"));
         assert!(html.contains("<col style=\"width:"));
         assert!(html.contains("<th style=\"text-align:left\">Name</th>"));
         assert!(html.contains("<strong>Ada</strong>"));
-        let pdf_html = full_html(&document, None, Some(PaperSize::A4.code_columns()));
+        let pdf_html = full_html(
+            &document,
+            None,
+            Some(PageLayout::default().code_columns()),
+            DocumentFont::Georgia,
+        );
         assert!(pdf_html.contains("pdf-table-row--header"));
         assert!(pdf_html.contains("flex:0 0"));
         assert!(
-            export_pdf(&document, PaperSize::A4)
+            export_pdf(&document, PageLayout::default())
                 .unwrap()
                 .starts_with(b"%PDF-")
         );
@@ -1516,10 +1657,75 @@ mod tests {
             blocks: parse_blocks("# Title\n\nBody"),
             images: HashMap::new(),
         };
-        let bytes = export_html(&document).unwrap();
+        let bytes = export_html(&document, PageLayout::default()).unwrap();
         let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
         assert!(zip.by_name("index.html").is_ok());
         assert!(zip.by_name("assets/styles.css").is_ok());
+    }
+
+    #[test]
+    fn paginated_exports_use_the_shared_page_layout() {
+        use std::io::Read;
+
+        let document = ExportDocument {
+            title: "Layout".into(),
+            blocks: parse_blocks("# Layout\n\nBody"),
+            images: HashMap::new(),
+        };
+        let layout = PageLayout {
+            paper_size: PaperSize::Legal,
+            orientation: PageOrientation::Landscape,
+            font_family: DocumentFont::Arial,
+            margins: PageMargins {
+                top: 15.0,
+                right: 25.0,
+                bottom: 30.0,
+                left: 10.0,
+            },
+        };
+
+        let docx = export_docx(&document, layout).unwrap();
+        let mut docx_archive = zip::ZipArchive::new(Cursor::new(docx)).unwrap();
+        let mut document_xml = String::new();
+        docx_archive
+            .by_name("word/document.xml")
+            .unwrap()
+            .read_to_string(&mut document_xml)
+            .unwrap();
+        assert!(document_xml.contains("w:w=\"20160\""));
+        assert!(document_xml.contains("w:h=\"12240\""));
+        assert!(document_xml.contains("w:orient=\"landscape\""));
+        assert!(document_xml.contains("w:top=\"850\""));
+        assert!(document_xml.contains("w:right=\"1417\""));
+        assert!(document_xml.contains("w:bottom=\"1701\""));
+        assert!(document_xml.contains("w:left=\"567\""));
+        let mut docx_styles_xml = String::new();
+        docx_archive
+            .by_name("word/styles.xml")
+            .unwrap()
+            .read_to_string(&mut docx_styles_xml)
+            .unwrap();
+        assert!(docx_styles_xml.contains("w:ascii=\"Arial\""));
+
+        let odt = export_odt(&document, layout).unwrap();
+        let mut odt_archive = zip::ZipArchive::new(Cursor::new(odt)).unwrap();
+        let mut styles_xml = String::new();
+        odt_archive
+            .by_name("styles.xml")
+            .unwrap()
+            .read_to_string(&mut styles_xml)
+            .unwrap();
+        assert!(styles_xml.contains("fo:page-width=\"355.6mm\""));
+        assert!(styles_xml.contains("fo:page-height=\"215.9mm\""));
+        assert!(styles_xml.contains("style:print-orientation=\"landscape\""));
+        assert!(styles_xml.contains("fo:margin-top=\"15mm\""));
+        assert!(styles_xml.contains("fo:margin-right=\"25mm\""));
+        assert!(styles_xml.contains("fo:margin-bottom=\"30mm\""));
+        assert!(styles_xml.contains("fo:margin-left=\"10mm\""));
+        assert!(styles_xml.contains("style:font-name=\"Arial\""));
+
+        let html = full_html(&document, None, None, layout.font_family);
+        assert!(html.contains("--document-font:Arial, 'Segoe UI', sans-serif"));
     }
 
     #[test]
@@ -1563,9 +1769,23 @@ mod tests {
             blocks: parse_blocks(&markdown),
             images,
         };
-        let pdf = export_pdf(&document, PaperSize::A4).unwrap();
-        let docx = export_docx(&document, PaperSize::Letter).unwrap();
-        let odt = export_odt(&document, PaperSize::A5).unwrap();
+        let pdf = export_pdf(&document, PageLayout::default()).unwrap();
+        let docx = export_docx(
+            &document,
+            PageLayout {
+                paper_size: PaperSize::Letter,
+                ..PageLayout::default()
+            },
+        )
+        .unwrap();
+        let odt = export_odt(
+            &document,
+            PageLayout {
+                paper_size: PaperSize::A5,
+                ..PageLayout::default()
+            },
+        )
+        .unwrap();
         assert!(pdf.starts_with(b"%PDF-"));
         assert!(docx.starts_with(b"PK"));
         assert!(odt.starts_with(b"PK"));
@@ -1578,7 +1798,7 @@ mod tests {
             fs::write(directory.join("med-export.odt"), odt).unwrap();
             fs::write(
                 directory.join("med-export-html.zip"),
-                export_html(&document).unwrap(),
+                export_html(&document, PageLayout::default()).unwrap(),
             )
             .unwrap();
         }
@@ -1597,7 +1817,7 @@ mod tests {
             blocks: parse_blocks(&format!("```js\n{source}\n```")),
             images: HashMap::new(),
         };
-        let html = full_html(&document, None, Some(82));
+        let html = full_html(&document, None, Some(82), DocumentFont::Georgia);
         assert!(html.contains("pdf-code-line"));
         assert!(!html.contains("<pre>"));
     }
@@ -1631,11 +1851,21 @@ This content must be laid out after every code line."#;
             images: HashMap::new(),
         };
 
-        let html = full_html(&document, None, Some(PaperSize::A4.code_columns()));
+        let html = full_html(
+            &document,
+            None,
+            Some(PageLayout::default().code_columns()),
+            DocumentFont::Georgia,
+        );
 
         assert!(!html.contains("<pre"));
         assert_eq!(html.matches("pdf-code-line is-first").count(), 3);
         assert!(html.contains("This content must be laid out after every code line."));
+        assert!(
+            !html.contains(
+                "<p><code>This content must be laid out after every code line.</code></p>"
+            )
+        );
     }
 
     #[test]
@@ -1654,7 +1884,7 @@ This content must be laid out after every code line."#;
             source_path: None,
             destination_path: destination.to_string_lossy().into_owned(),
             format: ExportFormat::Pdf,
-            paper_size: PaperSize::A4,
+            page_layout: PageLayout::default(),
             include_images: false,
             title: "Canceled export".into(),
         };

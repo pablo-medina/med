@@ -15,6 +15,11 @@ dist-ssr
 # Generated document exports
 /output/
 
+# Local scratch, visual QA, and interrupted export artifacts
+/tmp/
+*.tmp
+*.med-export.tmp
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

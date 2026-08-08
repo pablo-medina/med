@@ -6,8 +6,10 @@ import "./styles/base.css";
 import "./styles/editor.css";
 import { Button } from "./components/Button";
 import { ExportDialog, ExportProgressDialog } from "./components/ExportDialog";
+import { PageSetupDialog } from "./components/PageSetupDialog";
 import { Splitter } from "./components/Splitter";
 import { TitleBar } from "./components/TitleBar";
+import { AppLogo } from "./components/AppLogo";
 import { Toolbar } from "./components/Toolbar";
 import { useWindowManager } from "./components/WindowManager";
 import { MarkdownPreview } from "./editor/MarkdownPreview";
@@ -17,7 +19,16 @@ import {
   type RichEditorHandle,
 } from "./editor/RichEditor";
 import { canonicalizeMarkdown } from "./editor/markdown";
+import {
+  loadPageLayout,
+  pageDimensionsMm,
+  pageLayoutStyle,
+  savePageLayout,
+  type PageLayout,
+  type PageViewMode,
+} from "./document/pageLayout";
 import { useI18n } from "./i18n";
+import type { TranslationKey } from "./i18n/types";
 import {
   chooseMarkdownPath,
   fileNameFromPath,
@@ -33,7 +44,10 @@ import {
   type ExportOptions,
 } from "./platform/export";
 
-type WorkspaceMode = "visual" | "source";
+type WorkspaceMode = PageViewMode | "source";
+
+const millimetersToPixels = 96 / 25.4;
+const pageGapPixels = 24;
 
 const initialSelection: EditorSelectionState = {
   block: "paragraph",
@@ -162,7 +176,7 @@ function PreferencesDialogContent({ onClose }: { onClose: () => void }) {
           ) : (
             <div className="about-dialog preferences__about">
               <div className="about-dialog__identity">
-                <span className="about-dialog__mark" aria-hidden="true">M</span>
+                <AppLogo className="about-dialog__mark" />
                 <div>
                   <strong>{t("app.name")}</strong>
                   <span>{t("app.description")}</span>
@@ -196,7 +210,9 @@ export default function App() {
   const [markdown, setMarkdown] = useState("");
   const [savedMarkdown, setSavedMarkdown] = useState("");
   const [filePath, setFilePath] = useState<string | null>(null);
-  const [mode, setMode] = useState<WorkspaceMode>("visual");
+  const [mode, setMode] = useState<WorkspaceMode>("web");
+  const [pageLayout, setPageLayout] = useState(loadPageLayout);
+  const [pageCount, setPageCount] = useState(1);
   const [selection, setSelection] = useState(initialSelection);
   const [saving, setSaving] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -278,7 +294,7 @@ export default function App() {
     setMarkdown("");
     setSavedMarkdown("");
     setFilePath(null);
-    setMode("visual");
+    setMode("web");
     requestAnimationFrame(() => editorRef.current?.focus());
   }, [ensureCanDiscard]);
 
@@ -290,7 +306,7 @@ export default function App() {
       setMarkdown(opened.content);
       setSavedMarkdown(opened.content);
       setFilePath(opened.path);
-      setMode("visual");
+      setMode("web");
     } catch {
       await showMessage(
         t("dialog.openError.title"),
@@ -339,6 +355,25 @@ export default function App() {
     if (url) editorRef.current?.setLink(url);
   }, [showDialog, t]);
 
+  const showPageSetup = useCallback(async () => {
+    const nextLayout = await showDialog<PageLayout>({
+      title: t("pageSetup.title"),
+      description: t("pageSetup.description"),
+      width: "wide",
+      render: ({ close }) => (
+        <PageSetupDialog
+          t={t}
+          initialLayout={pageLayout}
+          onCancel={() => close()}
+          onApply={close}
+        />
+      ),
+    });
+    if (!nextLayout) return;
+    setPageLayout(nextLayout);
+    savePageLayout(nextLayout);
+  }, [pageLayout, showDialog, t]);
+
   const showExportDialog = useCallback(async () => {
     if (exportingRef.current) return;
     const options = await showDialog<ExportOptions>({
@@ -346,7 +381,12 @@ export default function App() {
       description: t("export.description"),
       width: "wide",
       render: ({ close }) => (
-        <ExportDialog t={t} onCancel={() => close()} onExport={close} />
+        <ExportDialog
+          t={t}
+          pageLayout={pageLayout}
+          onCancel={() => close()}
+          onExport={close}
+        />
       ),
     });
     if (!options) return;
@@ -428,7 +468,7 @@ export default function App() {
       await showMessage(t("export.success.title"), t("export.success.message"));
     }
     requestAnimationFrame(() => editorRef.current?.focus());
-  }, [documentName, filePath, markdown, openDialog, showDialog, showMessage, t]);
+  }, [documentName, filePath, markdown, openDialog, pageLayout, showDialog, showMessage, t]);
 
   useEffect(() => {
     const title = `${documentName}${dirty ? " •" : ""} — MED`;
@@ -471,10 +511,25 @@ export default function App() {
   }, [newDocument, openDocument, saveDocument]);
 
   const wordCount = markdown.trim() ? markdown.trim().split(/\s+/u).length : 0;
+  const pageDimensions = pageDimensionsMm(pageLayout);
+  const pageHeightPixels = pageDimensions.height * millimetersToPixels;
+  const pageStackHeight = pageCount * pageHeightPixels + (pageCount - 1) * pageGapPixels;
 
   return (
     <div className="app-shell">
-      <TitleBar documentName={documentName} dirty={dirty} onRequestClose={() => void requestClose()} />
+      <TitleBar
+        documentName={documentName}
+        dirty={dirty}
+        onNew={() => void newDocument()}
+        onOpen={() => void openDocument()}
+        onSave={() => void saveDocument()}
+        onSaveAs={() => void saveDocument(true)}
+        onExport={() => void showExportDialog()}
+        onPageSetup={() => void showPageSetup()}
+        onPreferences={() => void showPreferences()}
+        onExit={() => void requestClose()}
+        onRequestClose={() => void requestClose()}
+      />
       <Toolbar
         t={t}
         editorRef={editorRef}
@@ -484,24 +539,52 @@ export default function App() {
         onOpen={() => void openDocument()}
         onSave={() => void saveDocument()}
         onSaveAs={() => void saveDocument(true)}
-        onExport={() => void showExportDialog()}
-        onPreferences={() => void showPreferences()}
-        onExit={() => void requestClose()}
         onLink={() => void showLinkDialog()}
+        onPageSetup={() => void showPageSetup()}
         onModeChange={setMode}
       />
       <main className="workspace">
-        {mode === "visual" ? (
-          <div className="document-viewport">
-            <article className="document-page">
-              <RichEditor
-                ref={editorRef}
-                value={markdown}
-                label={t("editor.document")}
-                onChange={setMarkdown}
-                onSelectionChange={setSelection}
-              />
-            </article>
+        {mode !== "source" ? (
+          <div className={`document-viewport document-viewport--${mode}`}>
+            {mode === "document" ? (
+              <div
+                className="document-page-stack"
+                style={{
+                  ...pageLayoutStyle(pageLayout),
+                  minHeight: `${pageStackHeight}px`,
+                }}
+              >
+                <div className="document-sheet-layer" aria-hidden="true">
+                  {Array.from({ length: pageCount }, (_, index) => (
+                    <span
+                      className="document-sheet"
+                      key={index}
+                      style={{ top: `${index * (pageHeightPixels + pageGapPixels)}px` }}
+                    />
+                  ))}
+                </div>
+                <article className="document-content">
+                  <RichEditor
+                    ref={editorRef}
+                    value={markdown}
+                    label={t("editor.document")}
+                    onChange={setMarkdown}
+                    onSelectionChange={setSelection}
+                    pagination={{ layout: pageLayout, onPageCountChange: setPageCount }}
+                  />
+                </article>
+              </div>
+            ) : (
+              <article className="document-web" style={pageLayoutStyle(pageLayout)}>
+                <RichEditor
+                  ref={editorRef}
+                  value={markdown}
+                  label={t("editor.document")}
+                  onChange={setMarkdown}
+                  onSelectionChange={setSelection}
+                />
+              </article>
+            )}
           </div>
         ) : (
           <Splitter
@@ -522,7 +605,7 @@ export default function App() {
               <div className="preview-pane">
                 <header className="pane-header">{t("source.preview")}</header>
                 <div className="preview-scroll">
-                  <article className="preview-page">
+                  <article className="preview-page" style={pageLayoutStyle(pageLayout)}>
                     <MarkdownPreview value={markdown} label={t("source.preview")} />
                   </article>
                 </div>
@@ -537,7 +620,8 @@ export default function App() {
         <span className="status-bar__spacer" />
         <span>{t("status.words", { count: wordCount })}</span>
         <span>{t("status.characters", { count: markdown.length })}</span>
-        <span>{mode === "visual" ? t("status.mode.visual") : t("status.mode.source")}</span>
+        {mode === "document" && <span>{t("status.pages", { count: pageCount })}</span>}
+        <span>{t(`status.mode.${mode}` as TranslationKey)}</span>
       </footer>
     </div>
   );
