@@ -54,6 +54,8 @@ const initialSelection: EditorSelectionState = {
   bold: false,
   italic: false,
   link: false,
+  bulletList: false,
+  orderedList: false,
 };
 
 function LinkDialogContent({

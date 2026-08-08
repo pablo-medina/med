@@ -87,6 +87,14 @@ function tableCellMarkdown(cell: ProseMirrorNode) {
 const medMarkdownSerializer = new MarkdownSerializer(
   {
     ...defaultMarkdownSerializer.nodes,
+    bullet_list(state, node, parent, index) {
+      const tightNode = node.type.create({ ...node.attrs, tight: true }, node.content);
+      defaultMarkdownSerializer.nodes.bullet_list(state, tightNode, parent, index);
+    },
+    ordered_list(state, node, parent, index) {
+      const tightNode = node.type.create({ ...node.attrs, tight: true }, node.content);
+      defaultMarkdownSerializer.nodes.ordered_list(state, tightNode, parent, index);
+    },
     table(state, node) {
       const rows = Array.from({ length: node.childCount }, (_, rowIndex) => node.child(rowIndex));
       const columns = Math.max(...rows.map((row) => row.childCount));
@@ -113,6 +121,18 @@ const medMarkdownSerializer = new MarkdownSerializer(
     table_row() {},
     table_cell() {},
     table_header() {},
+    text(state, node, parent, index) {
+      const beginsVisualLine = index === 0
+        || parent.child(index - 1).type === markdownSchema.nodes.hard_break;
+      const inAutolink = (state as unknown as { inAutolink?: boolean }).inAutolink;
+      if (inAutolink) {
+        state.text(node.text ?? "", false);
+      } else if (beginsVisualLine) {
+        state.write(state.esc(node.text ?? "", true));
+      } else {
+        state.text(node.text ?? "");
+      }
+    },
     hard_break(state, node, parent, index) {
       // Do not serialize trailing breaks. Markdown cannot preserve them
       // reliably, and this matches the default serializer's behavior.

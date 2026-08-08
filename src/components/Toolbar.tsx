@@ -12,6 +12,7 @@ import type {
   EditorSelectionState,
   RichEditorHandle,
 } from "../editor/RichEditor";
+import type { InsertableBlockKind } from "../editor/commands";
 import { IconButton } from "./Button";
 import { Icon } from "./Icon";
 import { useManagedSurface } from "./WindowManager";
@@ -136,6 +137,103 @@ function TablePicker({
   );
 }
 
+function BlockPicker({
+  t,
+  disabled,
+  onInsert,
+}: {
+  t: Translate;
+  disabled: boolean;
+  onInsert: (block: InsertableBlockKind) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const surfaceId = useId();
+  useManagedSurface({
+    id: `block-picker-${surfaceId}`,
+    kind: "popover",
+    ownerId: "main",
+    closePolicy: "outside-or-escape",
+  }, open);
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOutside = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      triggerRef.current?.focus();
+    };
+    document.addEventListener("mousedown", closeOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
+  const blocks: Array<{
+    kind: InsertableBlockKind;
+    label: string;
+    icon: "document" | "code" | "quote";
+    badge?: string;
+  }> = [
+    { kind: "paragraph", label: t("editor.heading.normal"), icon: "document" },
+    { kind: "heading1", label: t("editor.heading.level1"), icon: "document", badge: "H1" },
+    { kind: "heading2", label: t("editor.heading.level2"), icon: "document", badge: "H2" },
+    { kind: "heading3", label: t("editor.heading.level3"), icon: "document", badge: "H3" },
+    { kind: "code", label: t("editor.codeBlock"), icon: "code" },
+    { kind: "blockquote", label: t("editor.blockquote"), icon: "quote" },
+    { kind: "horizontalRule", label: t("editor.horizontalRule"), icon: "document", badge: "—" },
+  ];
+
+  return (
+    <div className="block-picker" ref={rootRef}>
+      <button
+        ref={triggerRef}
+        type="button"
+        className="icon-button block-picker__trigger"
+        aria-label={t("editor.insertBlock")}
+        title={t("editor.insertBlock")}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        disabled={disabled}
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <Icon name="code" />
+        <Icon name="chevronDown" />
+      </button>
+      {open && (
+        <div className="desktop-menu__popover block-picker__popover" role="menu">
+          <div className="block-picker__title">{t("editor.insertBlock")}</div>
+          {blocks.map((block) => (
+            <button
+              type="button"
+              className="desktop-menu__item block-picker__item"
+              role="menuitem"
+              key={block.kind}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                onInsert(block.kind);
+                setOpen(false);
+              }}
+            >
+              <span className="block-picker__icon">
+                {block.badge ?? <Icon name={block.icon} />}
+              </span>
+              <span>{block.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Toolbar({
   t,
   editorRef,
@@ -238,15 +336,20 @@ export function Toolbar({
       <div className="command-separator" />
       <div className="ribbon-group">
         <div className="command-group">
-          <IconButton icon="bulletList" label={t("editor.bulletedList")} disabled={visualDisabled} onClick={() => editorRef.current?.toggleBulletList()} />
-          <IconButton icon="numberedList" label={t("editor.numberedList")} disabled={visualDisabled} onClick={() => editorRef.current?.toggleOrderedList()} />
+          <IconButton icon="bulletList" label={t("editor.bulletedList")} selected={selection.bulletList} disabled={visualDisabled} onClick={() => editorRef.current?.toggleBulletList()} />
+          <IconButton icon="numberedList" label={t("editor.numberedList")} selected={selection.orderedList} disabled={visualDisabled} onClick={() => editorRef.current?.toggleOrderedList()} />
           <IconButton icon="quote" label={t("editor.blockquote")} disabled={visualDisabled} onClick={() => editorRef.current?.toggleBlockquote()} />
         </div>
         <span className="ribbon-group__label">{t("ribbon.group.paragraph")}</span>
       </div>
       <div className="command-separator" />
-      <div className="ribbon-group ribbon-group--compact">
+      <div className="ribbon-group ribbon-group--insert">
         <div className="command-group">
+          <BlockPicker
+            t={t}
+            disabled={visualDisabled}
+            onInsert={(block) => editorRef.current?.insertBlock(block)}
+          />
           <TablePicker
             label={t("editor.table")}
             disabled={visualDisabled}

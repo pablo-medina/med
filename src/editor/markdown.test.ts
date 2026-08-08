@@ -1,6 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { EditorState, TextSelection } from "prosemirror-state";
-import { insertMarkdownLineBreak } from "./commands";
 import {
   canonicalizeMarkdown,
   markdownSchema,
@@ -63,6 +61,22 @@ describe("canonicalizeMarkdown", () => {
     );
   });
 
+  it("escapes literal list markers after a visual line break", () => {
+    const document = markdownSchema.node("doc", null, [
+      markdownSchema.node("paragraph", null, [
+        markdownSchema.text("ordinary line"),
+        markdownSchema.node("hard_break"),
+        markdownSchema.text("- literal bullet"),
+        markdownSchema.node("hard_break"),
+        markdownSchema.text("1. literal number"),
+      ]),
+    ]);
+
+    const markdown = serializeMarkdown(document);
+    expect(markdown).toBe("ordinary line\n\\- literal bullet\n1\\. literal number");
+    expect(parseMarkdown(markdown).toJSON()).toEqual(document.toJSON());
+  });
+
   it("parses and serializes GFM tables with inline formatting and alignment", () => {
     const source = [
       "| Name | Score |",
@@ -78,46 +92,5 @@ describe("canonicalizeMarkdown", () => {
     );
     expect(document.firstChild?.child(0).child(1).attrs.align).toBe("right");
     expect(serializeMarkdown(document)).toBe(source);
-  });
-});
-
-describe("insertMarkdownLineBreak", () => {
-  it("inserts one hard break when Enter is pressed in a paragraph", () => {
-    const document = parseMarkdown("firstsecond");
-    const state = EditorState.create({
-      schema: markdownSchema,
-      doc: document,
-      selection: TextSelection.create(document, 6),
-    });
-    let nextState = state;
-
-    expect(
-      insertMarkdownLineBreak(state, (transaction) => {
-        nextState = state.apply(transaction);
-      }),
-    ).toBe(true);
-    expect(serializeMarkdown(nextState.doc)).toBe("first\nsecond");
-  });
-
-  it("lets the base keymap handle Enter in a list", () => {
-    const document = parseMarkdown("* item");
-    const state = EditorState.create({
-      schema: markdownSchema,
-      doc: document,
-      selection: TextSelection.create(document, 4),
-    });
-
-    expect(insertMarkdownLineBreak(state)).toBe(false);
-  });
-
-  it("lets the base keymap handle Enter in a heading", () => {
-    const document = parseMarkdown("# Heading");
-    const state = EditorState.create({
-      schema: markdownSchema,
-      doc: document,
-      selection: TextSelection.create(document, 4),
-    });
-
-    expect(insertMarkdownLineBreak(state)).toBe(false);
   });
 });

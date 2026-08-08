@@ -168,6 +168,12 @@ export function WindowManager({ children }: { children: ReactNode }) {
     return () => surfacesRef.current.delete(surface.id);
   }, []);
 
+  useEffect(() => {
+    const suppressWebViewMenu = (event: MouseEvent) => event.preventDefault();
+    document.addEventListener("contextmenu", suppressWebViewMenu);
+    return () => document.removeEventListener("contextmenu", suppressWebViewMenu);
+  }, []);
+
   const closeDialog = useCallback((id: string, result?: unknown) => {
     setDialogs((entries) => {
       const entry = entries.find((candidate) => candidate.id === id);

@@ -1,10 +1,21 @@
 import {
+  useCallback,
   forwardRef,
   useEffect,
   useImperativeHandle,
   useRef,
+  useState,
 } from "react";
-import { baseKeymap, setBlockType, toggleMark, wrapIn } from "prosemirror-commands";
+import {
+  baseKeymap,
+  chainCommands,
+  deleteSelection,
+  newlineInCode,
+  selectAll,
+  setBlockType,
+  toggleMark,
+  wrapIn,
+} from "prosemirror-commands";
 import { history, redo, undo } from "prosemirror-history";
 import {
   inputRules,
@@ -13,11 +24,28 @@ import {
 } from "prosemirror-inputrules";
 import { keymap } from "prosemirror-keymap";
 import { DOMParser as ProseMirrorDOMParser, Fragment } from "prosemirror-model";
-import { EditorState, TextSelection, type Command } from "prosemirror-state";
+import {
+  EditorState,
+  Selection,
+  TextSelection,
+  type Command,
+} from "prosemirror-state";
+import {
+  liftListItem,
+  sinkListItem,
+} from "prosemirror-schema-list";
 import { EditorView } from "prosemirror-view";
 import { goToNextCell, tableEditing } from "prosemirror-tables";
+import { ContextMenu, type ContextMenuItem } from "../components/ContextMenu";
 import { pageDimensionsMm, type PageLayout } from "../document/pageLayout";
-import { insertMarkdownLineBreak } from "./commands";
+import { useI18n } from "../i18n";
+import {
+  insertBlock,
+  insertMarkdownHardBreak,
+  insertParagraphOrContinueList,
+  toggleList,
+  type InsertableBlockKind,
+} from "./commands";
 import { markdownSchema, parseMarkdown, serializeMarkdown } from "./markdown";
 
 export type BlockKind = "paragraph" | "heading1" | "heading2" | "heading3" | "code";
@@ -27,6 +55,8 @@ export interface EditorSelectionState {
   bold: boolean;
   italic: boolean;
   link: boolean;
+  bulletList: boolean;
+  orderedList: boolean;
 }
 
 export interface RichEditorHandle {
@@ -34,9 +64,12 @@ export interface RichEditorHandle {
   toggleBold: () => boolean;
   toggleItalic: () => boolean;
   setBlock: (block: BlockKind) => boolean;
+  insertBlock: (block: InsertableBlockKind) => boolean;
   toggleBulletList: () => boolean;
   toggleOrderedList: () => boolean;
   toggleBlockquote: () => boolean;
+  indentList: () => boolean;
+  outdentList: () => boolean;
   insertTable: (rows: number, columns: number) => boolean;
   setLink: (href: string) => boolean;
   undo: () => boolean;
@@ -140,6 +173,12 @@ function selectionState(view: EditorView): EditorSelectionState {
   };
 
   const parent = $from.parent;
+  const hasAncestor = (type: typeof markdownSchema.nodes.bullet_list) => {
+    for (let depth = $from.depth; depth > 0; depth -= 1) {
+      if ($from.node(depth).type === type) return true;
+    }
+    return false;
+  };
   let block: BlockKind = "paragraph";
   if (parent.type === markdownSchema.nodes.heading) {
     block = `heading${Math.min(parent.attrs.level, 3)}` as BlockKind;
@@ -152,6 +191,8 @@ function selectionState(view: EditorView): EditorSelectionState {
     bold: hasMark("strong"),
     italic: hasMark("em"),
     link: hasMark("link"),
+    bulletList: hasAncestor(markdownSchema.nodes.bullet_list),
+    orderedList: hasAncestor(markdownSchema.nodes.ordered_list),
   };
 }
 
@@ -162,10 +203,15 @@ function editorInputRules() {
         level: match[1].length,
       })),
       textblockTypeInputRule(/^```$/, markdownSchema.nodes.code_block),
-      wrappingInputRule(/^\s*([-+*])\s$/, markdownSchema.nodes.bullet_list),
-      wrappingInputRule(/^(\d+)\.\s$/, markdownSchema.nodes.ordered_list, (match) => ({
+      wrappingInputRule(
+        /^\s*([-+*])\s$/,
+        markdownSchema.nodes.bullet_list,
+        { tight: true },
+      ),
+      wrappingInputRule(/^(\d+)[.)]\s$/, markdownSchema.nodes.ordered_list, (match) => ({
         order: Number(match[1]),
-      })),
+        tight: true,
+      }), (match, node) => node.childCount + node.attrs.order === Number(match[1])),
       wrappingInputRule(/^>\s$/, markdownSchema.nodes.blockquote),
     ],
   });
@@ -173,6 +219,7 @@ function editorInputRules() {
 
 export const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
   function RichEditor({ value, label, onChange, onSelectionChange, pagination }, ref) {
+    const { t } = useI18n();
     const mountRef = useRef<HTMLDivElement>(null);
     const paginationStyleRef = useRef<HTMLStyleElement>(null);
     const viewRef = useRef<EditorView | null>(null);
@@ -182,10 +229,63 @@ export const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
     const paginationRef = useRef(pagination);
     const paginationFrameRef = useRef<number | null>(null);
     const paginationSpacersRef = useRef<number[]>([]);
+    const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
 
     onChangeRef.current = onChange;
     onSelectionChangeRef.current = onSelectionChange;
     paginationRef.current = pagination;
+
+    const run = useCallback((command: Command) => {
+      const view = viewRef.current;
+      if (!view) return false;
+      const handled = command(view.state, view.dispatch, view);
+      if (handled) view.focus();
+      return handled;
+    }, []);
+
+    const closeContextMenu = useCallback((restoreFocus = false) => {
+      setContextMenu(null);
+      if (restoreFocus) requestAnimationFrame(() => viewRef.current?.focus());
+    }, []);
+
+    const openContextMenu = useCallback((x: number, y: number) => {
+      const menuWidth = 286;
+      const menuHeight = 520;
+      setContextMenu({
+        x: Math.max(8, Math.min(x, window.innerWidth - menuWidth - 8)),
+        y: Math.max(8, Math.min(y, window.innerHeight - menuHeight - 8)),
+      });
+    }, []);
+
+    const copySelection = useCallback(async (cut: boolean) => {
+      const view = viewRef.current;
+      if (!view || view.state.selection.empty) return;
+      const { from, to } = view.state.selection;
+      const text = view.state.doc.textBetween(from, to, "\n");
+      let copied = false;
+      try {
+        await navigator.clipboard.writeText(text);
+        copied = true;
+      } catch {
+        view.focus();
+        copied = document.execCommand("copy");
+      }
+      if (cut && copied) run(deleteSelection);
+    }, [run]);
+
+    const pasteClipboard = useCallback(async () => {
+      const view = viewRef.current;
+      if (!view || !navigator.clipboard?.readText) return;
+      try {
+        const text = await navigator.clipboard.readText();
+        if (!text) return;
+        const slice = parseMarkdown(text).slice(0);
+        view.dispatch(view.state.tr.replaceSelection(slice).scrollIntoView());
+        view.focus();
+      } catch {
+        view.focus();
+      }
+    }, []);
 
     const schedulePagination = () => {
       if (paginationFrameRef.current !== null) cancelAnimationFrame(paginationFrameRef.current);
@@ -222,9 +322,18 @@ export const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
           history(),
           editorInputRules(),
           keymap({
-            Enter: insertMarkdownLineBreak,
-            Tab: goToNextCell(1),
-            "Shift-Tab": goToNextCell(-1),
+            Enter: insertParagraphOrContinueList,
+            "Shift-Enter": chainCommands(newlineInCode, insertMarkdownHardBreak),
+            Tab: chainCommands(
+              goToNextCell(1),
+              sinkListItem(markdownSchema.nodes.list_item),
+            ),
+            "Shift-Tab": chainCommands(
+              goToNextCell(-1),
+              liftListItem(markdownSchema.nodes.list_item),
+            ),
+            "Mod-]": sinkListItem(markdownSchema.nodes.list_item),
+            "Mod-[": liftListItem(markdownSchema.nodes.list_item),
             "Mod-b": toggleMark(markdownSchema.marks.strong),
             "Mod-i": toggleMark(markdownSchema.marks.em),
             "Mod-z": undo,
@@ -241,6 +350,7 @@ export const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
         dispatchTransaction(transaction) {
           const nextState = view.state.apply(transaction);
           view.updateState(nextState);
+          if (transaction.selectionSet || transaction.docChanged) setContextMenu(null);
           onSelectionChangeRef.current?.(selectionState(view));
           if (transaction.docChanged) {
             const markdown = serializeMarkdown(nextState.doc);
@@ -253,6 +363,35 @@ export const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
           class: "med-document",
           "aria-label": label,
           spellcheck: "true",
+        },
+        handleDOMEvents: {
+          contextmenu(view, event) {
+            event.preventDefault();
+            const mouseEvent = event as MouseEvent;
+            const target = view.posAtCoords({ left: mouseEvent.clientX, top: mouseEvent.clientY });
+            if (target) {
+              const { from, to } = view.state.selection;
+              if (target.pos < from || target.pos > to) {
+                view.dispatch(
+                  view.state.tr.setSelection(
+                    Selection.near(view.state.doc.resolve(target.pos)),
+                  ),
+                );
+              }
+            }
+            view.focus();
+            openContextMenu(mouseEvent.clientX, mouseEvent.clientY);
+            return true;
+          },
+        },
+        handleKeyDown(view, event) {
+          if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) {
+            return false;
+          }
+          event.preventDefault();
+          const coordinates = view.coordsAtPos(view.state.selection.head);
+          openContextMenu(coordinates.left, coordinates.bottom + 4);
+          return true;
         },
       });
 
@@ -295,14 +434,6 @@ export const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
     }, [pagination?.layout, Boolean(pagination)]);
 
     useImperativeHandle(ref, () => {
-      const run = (command: Command) => {
-        const view = viewRef.current;
-        if (!view) return false;
-        const handled = command(view.state, view.dispatch, view);
-        if (handled) view.focus();
-        return handled;
-      };
-
       return {
         focus: () => viewRef.current?.focus(),
         toggleBold: () => run(toggleMark(markdownSchema.marks.strong)),
@@ -313,9 +444,12 @@ export const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
           const level = Number(block[block.length - 1]);
           return run(setBlockType(markdownSchema.nodes.heading, { level }));
         },
-        toggleBulletList: () => run(wrapIn(markdownSchema.nodes.bullet_list)),
-        toggleOrderedList: () => run(wrapIn(markdownSchema.nodes.ordered_list)),
+        insertBlock: (block) => run(insertBlock(block)),
+        toggleBulletList: () => run(toggleList(markdownSchema.nodes.bullet_list)),
+        toggleOrderedList: () => run(toggleList(markdownSchema.nodes.ordered_list)),
         toggleBlockquote: () => run(wrapIn(markdownSchema.nodes.blockquote)),
+        indentList: () => run(sinkListItem(markdownSchema.nodes.list_item)),
+        outdentList: () => run(liftListItem(markdownSchema.nodes.list_item)),
         insertTable: (rows, columns) => {
           const view = viewRef.current;
           if (!view || rows < 1 || columns < 1) return false;
@@ -348,12 +482,46 @@ export const RichEditor = forwardRef<RichEditorHandle, RichEditorProps>(
         undo: () => run(undo),
         redo: () => run(redo),
       };
-    }, []);
+    }, [run]);
+
+    const view = viewRef.current;
+    const currentSelection = view ? selectionState(view) : null;
+    const commandAvailable = (command: Command) => Boolean(view && command(view.state));
+    const contextMenuItems: ContextMenuItem[] = [
+      { label: t("menu.edit.undo"), shortcut: "Ctrl+Z", icon: "undo", action: () => run(undo), disabled: !commandAvailable(undo) },
+      { label: t("menu.edit.redo"), shortcut: "Ctrl+Y", icon: "redo", action: () => run(redo), disabled: !commandAvailable(redo) },
+      { separator: true },
+      { label: t("menu.edit.cut"), shortcut: "Ctrl+X", action: () => copySelection(true), disabled: !view || view.state.selection.empty },
+      { label: t("menu.edit.copy"), shortcut: "Ctrl+C", action: () => copySelection(false), disabled: !view || view.state.selection.empty },
+      { label: t("menu.edit.paste"), shortcut: "Ctrl+V", action: pasteClipboard, disabled: !navigator.clipboard?.readText },
+      { label: t("menu.edit.selectAll"), shortcut: "Ctrl+A", action: () => run(selectAll) },
+      { separator: true },
+      { label: t("editor.bold"), shortcut: "Ctrl+B", icon: "bold", selected: currentSelection?.bold, action: () => run(toggleMark(markdownSchema.marks.strong)) },
+      { label: t("editor.italic"), shortcut: "Ctrl+I", icon: "italic", selected: currentSelection?.italic, action: () => run(toggleMark(markdownSchema.marks.em)) },
+      { separator: true },
+      { label: t("editor.bulletedList"), icon: "bulletList", selected: currentSelection?.bulletList, action: () => run(toggleList(markdownSchema.nodes.bullet_list)) },
+      { label: t("editor.numberedList"), icon: "numberedList", selected: currentSelection?.orderedList, action: () => run(toggleList(markdownSchema.nodes.ordered_list)) },
+      { label: t("editor.indentList"), shortcut: "Tab", action: () => run(sinkListItem(markdownSchema.nodes.list_item)), disabled: !commandAvailable(sinkListItem(markdownSchema.nodes.list_item)) },
+      { label: t("editor.outdentList"), shortcut: "Shift+Tab", action: () => run(liftListItem(markdownSchema.nodes.list_item)), disabled: !commandAvailable(liftListItem(markdownSchema.nodes.list_item)) },
+      { separator: true },
+      { label: t("editor.codeBlock"), icon: "code", action: () => run(insertBlock("code")) },
+      { label: t("editor.blockquote"), icon: "quote", action: () => run(insertBlock("blockquote")) },
+      { label: t("editor.horizontalRule"), action: () => run(insertBlock("horizontalRule")) },
+    ];
 
     return (
       <>
         <style ref={paginationStyleRef} />
         <div className="rich-editor" ref={mountRef} />
+        {contextMenu && (
+          <ContextMenu
+            label={t("editor.contextMenu")}
+            x={contextMenu.x}
+            y={contextMenu.y}
+            items={contextMenuItems}
+            onClose={closeContextMenu}
+          />
+        )}
       </>
     );
   },
